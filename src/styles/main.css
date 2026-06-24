@@ -1,0 +1,878 @@
+/*
+ * Minagi 文件分类助手 v2.0 — 主样式表
+ * 桃华帮 Minagi 重写的哦，每一像素都认真考虑过呢~
+ * 暖粉色玻璃拟态 + Minagi Alarm 同款设置卡片风格
+ * 这里桃华调了很久才满意……尤其是那个径向渐变阴影，是不是很自然？
+ */
+
+/* ─── 设计 Token ─────────────────────────────────── */
+:root {
+    /* 色彩 */
+    --pink:         #e87890;
+    --pink-hover:   #d4607a;
+    --pink-ghost:   #fdf2f5;
+    --pink-light:   #e8789014;
+    --danger:       #e8837a;
+    --danger-hover: #d46b62;
+    --danger-ghost: #fff3f2;
+
+    --copy:         #5cb882;
+    --cut:          #5b9bd5;
+
+    --bg-warm:      #f5f0ed;
+    --surface:      rgba(255, 255, 255, var(--glass-opacity));
+    --surface-high: rgba(255, 255, 255, 0.75);
+    --text:         #3a3335;
+    --text-dim:     #9a8f92;
+    --border:       rgba(255, 255, 255, var(--glass-opacity));
+
+    /* 形状 */
+    --radius-sm:    10px;
+    --radius:       14px;
+    --radius-lg:    18px;
+    --radius-pill:  99px;
+
+    /* 光影 */
+    --shadow-card:  0 2px 12px rgba(0,0,0,0.10), 0 4px 20px rgba(160,130,120,0.12);
+    --shadow-float: 0 6px 24px rgba(0,0,0,0.14), 0 10px 36px rgba(160,130,120,0.20);
+    --shadow-glow:  0 0 20px rgba(232, 120, 144, 0.18);
+
+    /* 动效 */
+    --ease-bounce:  cubic-bezier(0.34, 1.56, 0.64, 1);
+    --ease-smooth:  cubic-bezier(0.4, 0, 0.2, 1);
+    --ease-out:     cubic-bezier(0, 0, 0.2, 1);
+
+    /* 可变 */
+    --glass-opacity: 0.95;
+    --glass-blur:    20px;
+    --bg-opacity:    0.40;
+    --bg-image:      none;
+}
+
+/* 背景图伪元素（独立控制透明度） */
+body::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: var(--bg-image);
+    background-size: cover;
+    background-position: center;
+    opacity: var(--bg-opacity);
+    z-index: -1;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+}
+
+/* ─── 基础 ──────────────────────────────────────── */
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+body {
+    height: 100vh;
+    position: relative;
+    z-index: 0;               /* 桃华修复：创建独立堆叠上下文，让 body::before 的 z-index: -1 在 body 内部生效 */
+    overflow: hidden;
+    padding: 16px 20px;
+    font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-weight: 400;
+    color: var(--text);
+    background: var(--bg-warm);
+    -webkit-font-smoothing: antialiased;
+}
+
+/* body::before 现在在 body 的堆叠上下文中：
+   层1: body 的 background-color (--bg-warm)
+   层2: body::before (背景图 + opacity)
+   层3: body 的内容
+   这样背景图就能正确显示在暖色背景之上啦 ✨ */
+
+/* ─── 顶部栏 ────────────────────────────────────── */
+.header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 12px;
+    height: 48px;
+}
+
+.drag-spacer {
+    flex: 1;
+    height: 100%;
+}
+
+.header .app-title {
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+    font-size: 16px;
+    font-weight: 500;
+    color: #5a4f53;
+    white-space: nowrap;
+    letter-spacing: 0.02em;
+    text-shadow: 0 1px 2px rgba(255, 255, 255, 0.4);
+}
+
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+/* ─── 进度条 ────────────────────────────────────── */
+.progress-bar-wrap {
+    flex: 1;
+    display: none;
+    align-items: center;
+    gap: 14px;
+    height: 38px;
+    padding: 0 18px;
+    background: var(--surface);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border);
+    animation: fadeSlideIn 0.35s var(--ease-smooth);
+}
+
+@keyframes fadeSlideIn {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.progress-bar-wrap .info {
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    min-width: 100px;
+    font-weight: 450;
+}
+
+.progress-bar-wrap .track {
+    flex: 1;
+    height: 5px;
+    background: rgba(0, 0, 0, 0.04);
+    border-radius: var(--radius-pill);
+    overflow: hidden;
+}
+
+.progress-bar-wrap .fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--pink), #f0a0b8);
+    border-radius: var(--radius-pill);
+    transition: width 0.25s var(--ease-out);
+}
+
+.progress-cancel {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(0,0,0,0.12);
+    background: transparent;
+    color: #e81123;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    flex-shrink: 0;
+    padding: 0;
+    position: relative;
+    z-index: 5;
+    transition: all 0.2s ease;
+}
+.progress-cancel:hover {
+    background: #e81123;
+    color: #fff;
+    border-color: #e81123;
+    transform: scale(1.15);
+}
+
+/* ─── 复制 / 剪切 切换开关 ──────────────────────── */
+.mode-switch {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 36px;
+    padding: 0 14px;
+    background: var(--surface);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-card);
+    user-select: none;
+}
+
+.mode-switch .label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-dim);
+    transition: color 0.3s;
+}
+.mode-switch .label.copy-active { color: var(--copy); }
+.mode-switch .label.cut-active  { color: var(--cut); }
+
+.mode-switch .track {
+    width: 42px;
+    height: 22px;
+    border-radius: var(--radius-pill);
+    position: relative;
+    cursor: pointer;
+    transition: background 0.35s var(--ease-smooth);
+    flex-shrink: 0;
+}
+
+.mode-switch .track.copy { background: var(--copy); }
+.mode-switch .track.cut  { background: var(--cut); }
+
+.mode-switch .track .knob {
+    width: 18px;
+    height: 18px;
+    background: #fff;
+    border-radius: 50%;
+    position: absolute;
+    top: 2px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+    transition: transform 0.35s var(--ease-bounce);
+}
+.mode-switch .track.copy .knob { left: 2px; transform: translateX(0); }
+.mode-switch .track.cut  .knob { left: 2px; transform: translateX(20px); }
+
+/* 设置按钮 */
+.settings-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    box-shadow: var(--shadow-card);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    transition: all 0.4s var(--ease-bounce);
+    flex-shrink: 0;
+    padding: 0;
+}
+
+.settings-btn svg {
+    width: 22px;
+    height: 22px;
+    transition: transform 0.55s var(--ease-bounce);
+}
+
+.settings-btn:hover {
+    background: #fff;
+    color: var(--pink);
+    box-shadow: var(--shadow-glow);
+}
+
+.settings-btn:hover svg {
+    transform: rotate(75deg);
+}
+
+/* ─── 3×2 网格 ──────────────────────────────────── */
+.grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    gap: 14px;
+    width: 100%;
+    height: calc(100% - 56px);
+}
+
+/* ─── 玻璃卡片 ──────────────────────────────────── */
+.card {
+    background: linear-gradient(180deg, rgba(255,255,255,var(--glass-opacity)) 0%, var(--pink-light) 100%);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border-radius: var(--radius-lg);
+    border: none;
+    box-shadow: var(--shadow-card);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.35s var(--ease-bounce),
+                box-shadow 0.35s var(--ease-smooth),
+                border-color 0.35s var(--ease-smooth);
+}
+
+.card:hover {
+    transform: translateY(-3px);
+    border-color: rgba(255, 255, 255, 0.7);
+    box-shadow: var(--shadow-float);
+}
+
+/* ─── 拖放区 ────────────────────────────────────── */
+.drop-zone {
+    flex: 1;
+    border-radius: var(--radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    margin-bottom: 10px;
+    position: relative;
+    overflow: hidden;
+    background-color: var(--pink-light);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    border: none;
+    outline: none;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    transition: all 0.3s var(--ease-smooth);
+}
+
+.drop-zone:focus, .drop-zone:focus-visible {
+    outline: none;
+}
+
+.drop-zone.has-bg {
+    border: none;
+    background-color: transparent;
+}
+
+.drop-zone.has-bg::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, rgba(0, 0, 0, 0.05) 0%, rgba(0, 0, 0, 0.45) 100%);
+    z-index: 1;
+    pointer-events: none;
+}
+
+.drop-zone .title {
+    font-size: 19px;
+    font-weight: 500;
+    color: #8a8280;
+    z-index: 2;
+    text-align: center;
+    padding: 0 14px;
+    transition: color 0.3s;
+    pointer-events: none;
+    letter-spacing: 0.03em;
+}
+
+.drop-zone.has-bg .title {
+    color: #fff;
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7);
+}
+
+/* 拖入悬停 */
+/* 卡片呼吸动效 */
+@keyframes cardBreathe {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.02); }
+}
+
+.card.drag-active {
+    animation: cardBreathe 0.8s ease-in-out infinite;
+    box-shadow: 0 0 30px rgba(232, 120, 144, 0.35), 0 0 60px rgba(232, 120, 144, 0.12);
+}
+
+.drop-zone.drag-over {
+    background-color: rgba(232, 120, 144, 0.12);
+}
+.drop-zone.has-bg.drag-over {
+    background-color: rgba(232, 120, 144, 0.10);
+}
+
+/* ─── 路径输入行 ────────────────────────────────── */
+.input-row {
+    display: flex;
+    gap: 8px;
+    height: 36px;
+}
+
+.input-row input {
+    flex: 1;
+    padding: 0 12px;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: var(--radius-sm);
+    outline: none;
+    background: rgba(255, 255, 255, 0.5);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--text);
+    transition: all 0.25s;
+}
+
+.input-row input:focus {
+    background: #fff;
+    border-color: var(--pink);
+    box-shadow: 0 0 0 3px rgba(232, 120, 144, 0.08);
+}
+
+.input-row .save-btn {
+    width: 36px;
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 15px;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.25s var(--ease-smooth);
+    flex-shrink: 0;
+}
+
+.input-row .save-btn.saved    { background: rgba(0, 0, 0, 0.06); color: #a09896; cursor: default; }
+.input-row .save-btn.modified { background: var(--pink); box-shadow: 0 2px 10px rgba(232, 120, 144, 0.3); }
+.input-row .save-btn.modified:hover { background: var(--pink-hover); }
+
+/* ─── 模态框遮罩 ────────────────────────────────── */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(40, 30, 28, 0.25);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    z-index: 100;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+}
+
+.modal-overlay.show {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.modal {
+    width: 500px;
+    max-height: 84vh;
+    user-select: none;
+    -webkit-user-select: none;
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-radius: var(--radius-lg);
+    padding: 20px 22px;
+    box-shadow: 0 8px 40px rgba(60, 40, 35, 0.15);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    overflow-y: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.modal::-webkit-scrollbar { display: none; }
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(0,0,0,0.05);
+}
+
+.modal-header h2 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.modal-close {
+    cursor: pointer;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    color: var(--text-dim);
+    transition: all 0.2s ease;
+}
+
+.modal-close:hover { background: rgba(0,0,0,0.06); color: var(--danger); }
+
+/* ─── 设置卡片（Minagi Alarm 风格）──────────────── */
+.set-card {
+    background: rgba(255, 255, 255, 0.68);
+    border: none;
+    border-radius: 14px;
+    padding: 14px 16px;
+    box-shadow: 0 1px 2px rgba(60, 40, 35, 0.06);
+    position: relative;
+    transition: transform 0.28s cubic-bezier(0.25, 0.46, 0.45, 0.94),
+                box-shadow 0.28s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* 径向渐隐阴影 */
+.set-card::before {
+    content: '';
+    position: absolute;
+    bottom: -3px;
+    left: 5%;
+    right: 5%;
+    height: 16px;
+    background: radial-gradient(
+        ellipse 80% 100% at 50% 0%,
+        rgba(60, 40, 35, 0.08) 0%,
+        rgba(60, 40, 35, 0.03) 35%,
+        transparent 75%
+    );
+    filter: blur(4px);
+    pointer-events: none;
+    transition: all 0.28s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+.set-card:hover { transform: translateY(-2px); box-shadow: 0 2px 4px rgba(60, 40, 35, 0.07); }
+.set-card:hover::before {
+    bottom: -6px;
+    height: 24px;
+    background: radial-gradient(
+        ellipse 80% 100% at 50% 0%,
+        rgba(60, 40, 35, 0.12) 0%,
+        rgba(60, 40, 35, 0.05) 35%,
+        transparent 75%
+    );
+    filter: blur(7px);
+}
+
+.set-card__title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+}
+
+.set-card__desc {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+}
+
+/* 设置按钮行 */
+.set-btn-row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.set-btn {
+    padding: 6px 14px;
+    border-radius: 99px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    font-family: inherit;
+    transition: all 0.2s ease;
+}
+
+.set-btn:active { transform: scale(0.94); }
+
+.set-btn--sec {
+    background: rgba(60, 40, 35, 0.05);
+    color: var(--text-dim);
+}
+.set-btn--sec:hover { background: rgba(60, 40, 35, 0.09); color: var(--text); }
+
+.set-btn--ghost {
+    background: transparent;
+    color: var(--text-dim);
+}
+.set-btn--ghost:hover { background: rgba(60, 40, 35, 0.04); color: var(--text); }
+
+/* 设置标签 */
+.set-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-dim);
+    letter-spacing: 0.3px;
+    margin-bottom: 2px;
+}
+
+.set-label span {
+    font-weight: 400;
+    color: var(--text-dim);
+}
+
+/* 设置滑块 */
+.set-slider {
+    width: 100%;
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: rgba(60, 40, 35, 0.08);
+    border-radius: 3px;
+    outline: none;
+    cursor: pointer;
+}
+.set-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--pink);
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(232, 120, 144, 0.25);
+    transition: transform 0.15s ease;
+}
+.set-slider::-webkit-slider-thumb:hover { transform: scale(1.2); }
+
+/* ─── 区域设置卡片列表 ──────────────────────────── */
+.zone-config-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.zone-config-card {
+    background: rgba(60, 40, 35, 0.02);
+    padding: 10px 14px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.zone-config-card .index-badge {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #c8b8b4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    font-weight: 600;
+    color: #fff;
+    flex-shrink: 0;
+}
+
+.zone-config-card .zone-name-input {
+    width: 80px;
+    padding: 5px 8px;
+    border: 1px solid rgba(0,0,0,0.06);
+    border-radius: 6px;
+    font-size: 11px;
+    font-family: inherit;
+    color: var(--text);
+    outline: none;
+    background: rgba(255,255,255,0.5);
+    transition: border-color 0.2s;
+    flex-shrink: 0;
+}
+.zone-config-card .zone-name-input:focus { border-color: var(--pink); }
+
+.zone-config-card .zone-btns {
+    display: flex;
+    gap: 4px;
+    flex: 1;
+    justify-content: flex-end;
+}
+
+.zone-config-card .zone-btn {
+    padding: 4px 10px;
+    border-radius: 99px;
+    font-size: 10px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    font-family: inherit;
+    transition: all 0.2s ease;
+    background: rgba(60,40,35,0.04);
+    color: var(--text-dim);
+}
+.zone-config-card .zone-btn:hover { background: rgba(60,40,35,0.08); color: var(--text); }
+.zone-config-card .zone-btn--del:hover { background: var(--danger-ghost); color: var(--danger); }
+
+/* ─── 颜色选择器 ────────────────────────────── */
+.set-color-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.set-color-input {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    border: 2px solid rgba(0,0,0,0.10);
+    padding: 2px;
+    cursor: pointer;
+    background: transparent;
+    transition: border-color 0.2s;
+}
+.set-color-input:hover { border-color: var(--pink); }
+.set-color-input::-webkit-color-swatch-wrapper { padding: 0; }
+.set-color-input::-webkit-color-swatch { border-radius: 5px; border: none; }
+
+/* ─── 拖拽预览 ────────────────────────────────── */
+.drag-preview {
+    position: fixed;
+    pointer-events: none;
+    display: none;
+    background: rgba(0,0,0,0.82);
+    color: #fff;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 500;
+    z-index: 9999;
+    white-space: nowrap;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+}
+.drag-preview.show { display: block; }
+
+/* ─── 设置开关行 ─────────────────────────────── */
+.set-toggle-row {
+    display: flex;
+    align-items: center;
+    padding: 8px 0;
+    font-size: 12px;
+    color: var(--text);
+    cursor: pointer;
+}
+.set-toggle-row + .set-toggle-row {
+    border-top: 1px solid rgba(0,0,0,0.04);
+}
+.set-toggle-row .toggle {
+    margin-left: auto;
+}
+
+/* ─── Toggle 开关（Minagi Alarm 同款）────────── */
+.toggle {
+    width: 40px;
+    height: 22px;
+    border-radius: 99px;
+    background: #c8b8b4;
+    position: relative;
+    transition: background 0.25s ease;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+.toggle:active { transform: scale(0.92); }
+.toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+.toggle--on { background: var(--pink); }
+.toggle--on::after {
+    transform: translateX(18px);
+    box-shadow: 0 1px 6px rgba(232, 120, 144, 0.4);
+}
+
+/* ─── 关于卡片 ──────────────────────────────────── */
+.set-about {
+    text-align: left;
+    padding: 16px;
+}
+
+.set-about__row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.set-about__icon { font-size: 14px; color: var(--pink); }
+
+.set-about__name {
+    font-size: 13px;
+    font-weight: 520;
+    letter-spacing: 1px;
+    color: var(--text);
+}
+
+.set-about__ver {
+    font-size: 10px;
+    color: var(--text-dim);
+}
+
+.set-about__line {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 4px;
+}
+
+.set-about__line a {
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+    transition: color 0.2s;
+}
+.set-about__line a:hover { color: var(--pink); }
+
+/* ─── 窗口控制按钮 ─────────────────────────────── */
+.win-controls {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+    margin-left: 8px;
+}
+
+.win-btn {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    transition: all 0.25s var(--ease-smooth);
+    padding: 0;
+}
+
+/* 不用 CSS :hover，改用 JS 控制的 .hovered 类（解决 WebView2 托盘恢复后 :hover 粘住的问题） */
+.win-btn.hovered { background: #fff; }
+.win-btn.win-min.hovered  { background: var(--pink); color: #fff !important; border-color: var(--pink); }
+.win-btn.win-max.hovered  { color: #5cb882; }
+.win-btn.win-close.hovered { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+/* ─── Toast ──────────────────────────────────────── */
+#toast {
+    position: fixed;
+    bottom: 32px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(50, 38, 36, 0.88);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    color: #fff;
+    padding: 10px 26px;
+    border-radius: var(--radius-pill);
+    font-size: 13px;
+    font-weight: 450;
+    letter-spacing: 0.02em;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 200;
+    transition: opacity 0.35s var(--ease-smooth);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}

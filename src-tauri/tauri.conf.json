@@ -1,0 +1,45 @@
+{
+    "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/main/tooling/cli/schema.json",
+    "productName": "Minagi 文件分类助手",
+    "version": "2.0.0",
+    "identifier": "minagi-file-classifier",
+    "build": {
+        "frontendDist": "../src",
+        "beforeDevCommand": "",
+        "beforeBuildCommand": ""
+    },
+    "app": {
+        "withGlobalTauri": true,
+        "windows": [
+            {
+                "label": "main",
+                "title": "Minagi 文件分类助手",
+                "width": 780,
+                "height": 550,
+                "resizable": false,
+                "decorations": false,
+                "center": true,
+                "backgroundColor": "#f5f0ed"
+            }
+        ],
+        "security": {
+            "csp": null
+        }
+    },
+    "bundle": {
+        "active": true,
+        "targets": ["nsis"],
+        "icon": [
+            "icons/icon.ico"
+        ],
+        "resources": [],
+        "windows": {
+            "nsis": {
+                "template": "./nsis/template/installer.nsi",
+                "installMode": "currentUser",
+                "installerIcon": "icons/icon.ico",
+                "displayLanguageSelector": false
+            }
+        }
+    }
+}

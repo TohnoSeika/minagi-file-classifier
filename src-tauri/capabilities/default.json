@@ -1,0 +1,11 @@
+{
+    "identifier": "default",
+    "description": "默认权限 —— 桃华为 Minagi 配置的基础能力",
+    "windows": ["main"],
+    "permissions": [
+        "core:default",
+        "core:event:allow-listen",
+        "core:event:allow-emit",
+        "core:event:default"
+    ]
+}

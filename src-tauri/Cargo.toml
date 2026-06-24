@@ -1,0 +1,23 @@
+[package]
+name = "minagi-file-classifier"
+version = "2.0.0"
+description = "桃华帮 Minagi 重新设计的文件分类工具 —— Tauri 版，更轻更快更优雅"
+authors = ["Tohno Seika"]
+edition = "2021"
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+open = "5"
+base64 = "0.22"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "s"

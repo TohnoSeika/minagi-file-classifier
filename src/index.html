@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minagi 文件分类助手</title>
+    <link rel="stylesheet" href="styles/main.css">
+    <link rel="stylesheet" href="styles/history.css">
+</head>
+<body>
+
+    <!-- ═══ 顶部栏 ═══ -->
+    <header class="header">
+        <span class="app-title" data-tauri-drag-region>Minagi 文件分类助手</span>
+        <div class="drag-spacer" data-tauri-drag-region></div>
+
+        <div class="progress-bar-wrap" id="progress-wrap">
+            <span class="info" id="progress-text">准备就绪</span>
+            <div class="track">
+                <div class="fill" id="progress-fill"></div>
+            </div>
+            <button class="progress-cancel" id="btn-cancel" title="取消操作">✕</button>
+        </div>
+
+        <!-- 不可拖拽的右侧控件组（没有 data-tauri-drag-region 属性 = 不可拖拽） -->
+        <div class="header-right">
+            <div class="mode-switch" id="mode-switch">
+                <span class="label copy-active" id="label-copy">📋 复制</span>
+                <div class="track copy" id="mode-track">
+                    <div class="knob"></div>
+                </div>
+                <span class="label" id="label-cut">✂️ 剪切</span>
+            </div>
+
+            <button class="settings-btn" id="btn-history" title="操作历史">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"/>
+                    <polyline points="12 6 12 12 17 13"/>
+                </svg>
+            </button>
+
+            <button class="settings-btn" id="btn-settings" title="设置">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                </svg>
+            </button>
+
+            <div class="win-controls">
+                <button class="win-btn win-min" id="btn-minimize" title="最小化">
+                    <svg width="12" height="12" viewBox="0 0 12 12"><rect y="5" width="12" height="1.5" fill="currentColor"/></svg>
+                </button>
+                <button class="win-btn win-close" id="btn-close" title="关闭">
+                    <svg width="12" height="12" viewBox="0 0 12 12"><path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- ═══ 6 区域网格 ═══ -->
+    <main class="grid" id="grid"></main>
+
+    <!-- ═══ 设置模态框 ═══ -->
+    <div class="modal-overlay" id="modal-overlay">
+        <div class="modal" style="overflow:hidden">
+            <div class="modal-header">
+                <h2>⚙️ 设置</h2>
+                <span class="modal-close" id="modal-close">&times;</span>
+            </div>
+            <div class="settings-scroll" style="flex:1; overflow-y:auto; min-height:0; max-height:calc(84vh - 50px)">
+
+            <!-- 操作说明 -->
+            <div class="set-card">
+                <div class="set-card__title">📖 操作说明</div>
+                <div style="padding:8px 0">
+                    <button class="set-btn set-btn--sec" id="btn-guide">❓ 点击查看操作说明</button>
+                </div>
+            </div>
+
+            <!-- 界面视觉 -->
+            <div class="set-card">
+                <div class="set-card__title">🖼 界面视觉</div>
+
+                <div class="set-card__desc" id="bg-status">未设置背景图</div>
+                <div class="set-btn-row">
+                    <button class="set-btn set-btn--sec" id="btn-pick-bg">📂 选择背景图</button>
+                    <button class="set-btn set-btn--ghost" id="btn-clear-bg" style="color:var(--danger)">✕ 清除背景图</button>
+                </div>
+                <input type="file" id="input-global-bg" accept="image/*" hidden>
+
+                <div class="set-label" style="margin-top:10px">背景图片透明度 <span id="bg-opacity-value">40%</span></div>
+                <input class="set-slider" type="range" id="slider-bg-opacity" min="0.05" max="1" step="0.05">
+
+                <div class="set-label" style="margin-top:10px">软件界面透明度 <span id="opacity-value">90%</span></div>
+                <input class="set-slider" type="range" id="slider-opacity" min="0.1" max="1" step="0.05">
+            </div>
+
+            <!-- 主题颜色 -->
+            <div class="set-card">
+                <div class="set-card__title">🎨 主题颜色</div>
+                <div class="set-card__desc">调整界面的主色调</div>
+                <div class="set-color-row">
+                    <input type="color" class="set-color-input" id="input-theme-color" value="#e87890">
+                    <button class="set-btn set-btn--ghost" id="btn-reset-theme">恢复默认</button>
+                </div>
+            </div>
+
+            <!-- 其他选项 -->
+            <div class="set-card">
+                <div class="set-card__title">⚙ 其他选项</div>
+                <label class="set-toggle-row">
+                    <span>操作完成提示音</span>
+                    <div class="toggle toggle--on" id="toggle-chime"></div>
+                </label>
+                <label class="set-toggle-row">
+                    <span>最小化时隐藏到托盘</span>
+                    <div class="toggle" id="toggle-minimize-tray"></div>
+                </label>
+                <label class="set-toggle-row">
+                    <span>关闭时隐藏到托盘</span>
+                    <div class="toggle toggle--on" id="toggle-close-tray"></div>
+                </label>
+            </div>
+
+            <!-- 区域个性化 -->
+            <div class="set-card">
+                <div class="set-card__title">📂 区域个性化</div>
+                <div class="zone-config-list" id="zone-config-list"></div>
+            </div>
+
+            <!-- 桃华定制：配置快照 -->
+            <div class="set-card">
+                <div class="set-card__title">📸 配置快照</div>
+                <div class="set-card__desc">每次改区域名、路径或背景图时自动存档，最多保留 7 份</div>
+                <div class="snapshot-row" style="margin-top:10px; display:flex; gap:8px; align-items:center;">
+                    <select id="snapshot-select" class="snapshot-select" style="flex:1; padding:6px 8px; border-radius:8px; border:1px solid var(--border); background:var(--card-bg); color:var(--text); font-size:13px;">
+                        <option value="">— 选择快照 —</option>
+                    </select>
+                    <button class="set-btn set-btn--sec" id="btn-restore-snapshot" disabled>🔄 恢复此配置</button>
+                </div>
+                <div class="set-card__desc" id="snapshot-info" style="margin-top:6px; font-size:12px;"></div>
+            </div>
+
+            <!-- 关于 -->
+            <div class="set-card set-about">
+                <div class="set-about__row">
+                    <span class="set-about__icon">✦</span>
+                    <span class="set-about__name">Minagi 文件分类助手</span>
+                    <span class="set-about__ver">v2.0</span>
+                </div>
+                <div class="set-about__line">Developed by <a id="author-link">Tohno Seika</a></div>
+                <div class="set-about__line">im minagi, im everywhere</div>
+                <div class="set-about__line">本软件为免费软件，不会收取任何费用</div>
+                <div class="set-about__line" style="margin-top:6px; opacity:0.7">Tauri 版 —— 更轻更快更优雅 ✨</div>
+            </div>
+            </div><!-- /.settings-scroll -->
+        </div><!-- /.modal -->
+    </div><!-- /#modal-overlay -->
+
+    <!-- ═══ 操作说明弹出框 ═══ -->
+    <div class="modal-overlay" id="guide-overlay">
+        <div class="modal" style="width:620px">
+            <div class="modal-header">
+                <h2>📖 操作说明</h2>
+                <span class="modal-close" id="guide-close">&times;</span>
+            </div>
+            <div class="set-card">
+                <p class="guide-text">⚙️ 点击设置按钮自定义软件其他选项。</p>
+                <p class="guide-text">📸 点击配置快照，选择和恢复软件历史配置。</p>
+                <p class="guide-text">📂 双击六个拖曳区域打开你设定的目标文件夹。</p>
+                <p class="guide-text">🕐 点击时钟图标查看操作记录，最多保存50条记录。</p>
+                <p class="guide-text">📌 复制文件夹路径到六个拖曳区域下方粘贴并点击确定。</p>
+                <p class="guide-text">🖱️ 鼠标拖曳文件或文件夹到六个拖曳区域，软件自动将项目复制或剪切到目标位置。</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ 操作历史模态框 ═══ -->
+    <div class="modal-overlay" id="history-overlay">
+        <div class="modal" style="overflow:hidden">
+            <div class="modal-header">
+                <h2>🕐 操作历史</h2>
+                <div class="modal-actions">
+                    <button class="set-btn set-btn--ghost" id="btn-clear-history">清空</button>
+                    <span class="modal-close" id="history-close">&times;</span>
+                </div>
+            </div>
+            <div class="settings-scroll" style="flex:1; overflow-y:auto; min-height:0; max-height:calc(84vh - 90px)">
+                <div class="set-card">
+                <!-- 表头 -->
+                <div class="history-header-row">
+                    <span class="history-col history-col--src">原始路径</span>
+                    <span class="history-col history-col--name">文件详情</span>
+                    <span class="history-col history-col--dst">目标路径</span>
+                </div>
+                <!-- 记录列表 -->
+                <div id="history-list"></div>
+                <!-- 空状态 -->
+                <div class="set-card__desc" id="history-empty" style="text-align:center; padding:20px">
+                    暂无操作记录 ✨
+                </div>
+                </div><!-- /.set-card -->
+            </div><!-- /.settings-scroll -->
+        </div>
+    </div>
+
+    <!-- ═══ Toast ═══ -->
+    <div id="toast"></div>
+
+    <!-- ═══ 拖拽预览 ═══ -->
+    <div id="drag-preview" class="drag-preview"></div>
+
+    <script src="scripts/renderer.js"></script>
+    <script src="scripts/history.js"></script>
+</body>
+</html>
