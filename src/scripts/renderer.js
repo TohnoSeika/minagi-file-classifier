@@ -689,6 +689,12 @@ dom.authorLink.addEventListener('click', () => {
     window.sorterAPI.openExternal('https://space.bilibili.com/14816');
 });
 
+// GitHub 图标
+document.querySelector('.github-icon').addEventListener('click', (e) => {
+    e.preventDefault();
+    window.sorterAPI.openExternal('https://github.com/TohnoSeika');
+});
+
 // ─── 主题颜色 ──────────────────────────────────────
 const inputThemeColor = document.getElementById('input-theme-color');
 const btnResetTheme = document.getElementById('btn-reset-theme');
