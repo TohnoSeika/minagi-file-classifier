@@ -1363,30 +1363,45 @@ pub fn run() {
                     }
 
                     // 原生文件拖放 → 发射到前端（WebView2 没有 file.path）
+                    // 桃华修复：DragDropEvent 的 position 是物理像素坐标，
+                    // 但前端 elementFromPoint() 需要逻辑像素坐标，
+                    // 需要除以缩放因子再做转换
                     if let tauri::WindowEvent::DragDrop(dd) = &event {
+                        // 获取当前缩放因子
+                        let scale = app_handle
+                            .get_webview_window("main")
+                            .and_then(|w| w.scale_factor().ok())
+                            .unwrap_or(1.0);
+                        let to_logical = |pos: &tauri::PhysicalPosition<f64>| -> (f64, f64) {
+                            (pos.x / scale, pos.y / scale)
+                        };
+
                         match dd {
                             tauri::DragDropEvent::Enter { paths, position } => {
+                                let (lx, ly) = to_logical(position);
                                 let _ = app_handle.emit("tauri-drag-enter", serde_json::json!({
                                     "count": paths.len(),
-                                    "x": position.x,
-                                    "y": position.y,
+                                    "x": lx,
+                                    "y": ly,
                                 }));
                             }
                             tauri::DragDropEvent::Over { position } => {
+                                let (lx, ly) = to_logical(position);
                                 let _ = app_handle.emit("tauri-drag-over", serde_json::json!({
-                                    "x": position.x,
-                                    "y": position.y,
+                                    "x": lx,
+                                    "y": ly,
                                 }));
                             }
                             tauri::DragDropEvent::Drop { paths, position } => {
+                                let (lx, ly) = to_logical(position);
                                 let paths_str: Vec<String> = paths
                                     .iter()
                                     .map(|p| p.to_string_lossy().to_string())
                                     .collect();
                                 let _ = app_handle.emit("tauri-drop", serde_json::json!({
                                     "paths": paths_str,
-                                    "x": position.x,
-                                    "y": position.y,
+                                    "x": lx,
+                                    "y": ly,
                                 }));
                             }
                             tauri::DragDropEvent::Leave => {
