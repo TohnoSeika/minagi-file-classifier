@@ -70,8 +70,6 @@ $OldNsisOutput = "$ScriptDir\src-tauri\target\release\nsis"
 $OldBundleNsis = "$ScriptDir\src-tauri\target\release\bundle\nsis"
 
 foreach ($Dir in @($NsisOutput, $BundleNsis, $OldNsisOutput, $OldBundleNsis)) {
-
-foreach ($Dir in @($NsisOutput, $BundleNsis)) {
     if (Test-Path $Dir) {
         Remove-Item -Recurse -Force $Dir -ErrorAction SilentlyContinue
         Write-Host "  ✓ 已清理 $Dir" -ForegroundColor Green
@@ -106,7 +104,7 @@ if (-not (Test-Path $DistDir)) {
 
 # Tauri NSIS 命名规则: {productName}_{version}_x64-setup.exe
 $SourceInstaller = "$BundleNsis\${ProductName}_${Version}_x64-setup.exe"
-$TargetName = "Minagi_文件分类助手_v${Version}.exe"
+$TargetName = "Minagi_File_Classifier_v${Version}_Windows_Setup.exe"
 $TargetPath = "$DistDir\$TargetName"
 
 if (-not (Test-Path $SourceInstaller)) {

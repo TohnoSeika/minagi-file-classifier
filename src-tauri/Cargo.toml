@@ -1,6 +1,6 @@
 [package]
 name = "minagi-file-classifier"
-version = "2.0.0"
+version = "2.0.1"
 description = "桃华帮 Minagi 重新设计的文件分类工具 —— Tauri 版，更轻更快更优雅"
 authors = ["Tohno Seika"]
 edition = "2021"
