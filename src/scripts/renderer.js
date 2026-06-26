@@ -1,5 +1,5 @@
 /**
- * Minagi 文件分类助手 v2.0 — 渲染进程（Tauri 版）
+ * Minagi 文件分类助手 v2.0.1 — 渲染进程（Tauri 版）
  * 桃华把 UI 逻辑整理成了几个清晰的小模块 ✨
  * 和 Electron 版不同的地方：通过 Tauri invoke 桥接，更轻更快
  */
