@@ -76,7 +76,13 @@
                     var mc = e.mode === 'cut' ? 'cut' : 'copy';
                     var nm = '', nt = '';
                     if (e.item_count === 1) { var fn = e.file_names[0] || ''; nm = trunc(fn, 24); nt = fn; }
-                    else { nm = e.item_count + ' 个项目'; }
+                    else {
+                        nm = e.item_count + ' 个项目';
+                        // tooltip 显示前 3 个文件名，超出则加省略提示
+                        var _fns = e.file_names;
+                        if (_fns.length <= 3) { nt = _fns.join('\n'); }
+                        else { nt = _fns.slice(0, 3).join('\n') + '\n… 等 ' + _fns.length + ' 个文件'; }
+                    }
                     r.innerHTML =
                         '<span style="flex:0 0 52px;display:flex;justify-content:center;">' +
                         '<span style="cursor:pointer;width:28px;height:28px;display:flex;align-items:center;justify-content:center;color:#e87890;border-radius:8px;" data-path="'+esc(sd)+'" title="'+esc(sd)+'">' +
