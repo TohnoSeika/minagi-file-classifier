@@ -1004,10 +1004,13 @@ async fn win_close(
 #[tauri::command]
 async fn win_move(window: tauri::WebviewWindow, dx: f64, dy: f64) -> Result<(), String> {
     let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    // 桃华修复：outer_position() 返回的是物理像素
+    // 要先除以缩放因子转回逻辑坐标，再叠加 dx/dy（前端传的也是逻辑像素）
     window
         .set_position(tauri::LogicalPosition::new(
-            pos.x as f64 + dx,
-            pos.y as f64 + dy,
+            pos.x as f64 / scale + dx,
+            pos.y as f64 / scale + dy,
         ))
         .map_err(|e| e.to_string())
 }

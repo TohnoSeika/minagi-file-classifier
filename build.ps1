@@ -61,8 +61,15 @@ Write-Host ""
 
 # ── Step 2: 清理上一次的 NSIS 输出 ──
 Write-Host "🧹 Step 2/5: 清理上次 NSIS 残留..." -ForegroundColor Yellow
+
+# 清理带 target 架构的路径（脚本指定了 --target）
 $NsisOutput = "$ScriptDir\src-tauri\target\x86_64-pc-windows-msvc\release\nsis"
 $BundleNsis = "$ScriptDir\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis"
+# 也清理不带 target 的旧路径（防止手动 build 的产物残留）
+$OldNsisOutput = "$ScriptDir\src-tauri\target\release\nsis"
+$OldBundleNsis = "$ScriptDir\src-tauri\target\release\bundle\nsis"
+
+foreach ($Dir in @($NsisOutput, $BundleNsis, $OldNsisOutput, $OldBundleNsis)) {
 
 foreach ($Dir in @($NsisOutput, $BundleNsis)) {
     if (Test-Path $Dir) {

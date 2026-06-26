@@ -53,7 +53,7 @@
 
 ## 📦 下载
 
-从 [Releases](https://github.com/MinagiCN/minagi-file-classifier/releases) 页面下载最新版本的安装包即可。
+从 [Releases](https://github.com/TohnoSeika/minagi-file-classifier/releases) 页面下载最新版本的安装包即可。
 
 > 💡 当前版本 **v2.0.0**，安装包约 2MB，无需管理员权限即可安装。
 
@@ -71,7 +71,7 @@
 
 ```powershell
 # 1. 克隆仓库
-git clone https://github.com/MinagiCN/minagi-file-classifier.git
+git clone https://github.com/TohnoSeika/minagi-file-classifier.git
 cd minagi-file-classifier
 
 # 2. 运行构建脚本（自动读取版本号，打包输出到 dist/ 目录）
