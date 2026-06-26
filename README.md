@@ -49,6 +49,8 @@
 
 ![操作历史](screenshots/Screenshot-05.jpg)
 
+![操作说明](screenshots/Screenshot-06.jpg)
+
 ---
 
 ## 📦 下载
