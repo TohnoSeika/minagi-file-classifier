@@ -39,15 +39,15 @@
 
 ## 🖼 截图
 
-![主界面](screenshots/Screenshot-01.jpg)
+![软件界面](screenshots/Screenshot-01.jpg)
 
-![文件拖拽操作](screenshots/Screenshot-02.jpg)
+![操作历史](screenshots/Screenshot-02.jpg)
 
-![设置面板](screenshots/Screenshot-03.jpg)
+![设置界面1](screenshots/Screenshot-03.jpg)
 
-![配置快照](screenshots/Screenshot-04.jpg)
+![设置界面2](screenshots/Screenshot-04.jpg)
 
-![操作历史](screenshots/Screenshot-05.jpg)
+![设置界面3](screenshots/Screenshot-05.jpg)
 
 ![操作说明](screenshots/Screenshot-06.jpg)
 
