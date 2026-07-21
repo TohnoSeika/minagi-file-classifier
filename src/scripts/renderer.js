@@ -777,6 +777,9 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+// 禁用右键菜单（防止 Save As / Refresh 等干扰）
+document.addEventListener('contextmenu', (e) => e.preventDefault());
+
 // 桃华定制：快照管理 ────────────────────────────────
 
 let snapshotList = [];
