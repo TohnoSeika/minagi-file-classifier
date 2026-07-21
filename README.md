@@ -57,7 +57,7 @@
 
 从 [Releases](https://github.com/TohnoSeika/minagi-file-classifier/releases) 页面下载最新版本的安装包即可。
 
-> 💡 当前版本 **v2.0.1**，安装包约 2MB，无需管理员权限即可安装。
+> 💡 当前版本 **v2.0.2**，安装包约 2MB，无需管理员权限即可安装。
 
 ---
 
@@ -106,6 +106,9 @@ minagi-file-classifier/
 ---
 
 ## 📋 更新记录
+
+### v2.0.2
+- 🐛 修复了若干 bug
 
 ### v2.0.1
 - 🐛 修复高 DPI（125%/150%）显示器缩放下窗口拖拽飞出屏幕的问题
