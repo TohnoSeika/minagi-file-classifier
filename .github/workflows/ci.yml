@@ -1,0 +1,35 @@
+# 桃华写的 CI —— 推送和 PR 时先把「能不能编译、测试过不过」确认一遍
+# 只做检查，不打包、不发布，安装包还是交给 build.ps1
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo 产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: 编译检查
+        run: cargo check --all-targets --manifest-path src-tauri/Cargo.toml
+
+      - name: 单元测试
+        run: cargo test --lib --manifest-path src-tauri/Cargo.toml
+
+      # 前端没有构建步骤，语法错了也不会被 Tauri 拦住，这里补一道
+      - name: 前端脚本语法检查
+        run: |
+          node --check src/scripts/renderer.js
+          node --check src/scripts/history.js

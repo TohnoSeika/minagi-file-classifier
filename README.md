@@ -65,9 +65,11 @@
 
 ### 环境要求
 
-- [Rust](https://www.rust-lang.org/)（推荐使用 [rustup](https://rustup.rs/) 安装）
-- [Node.js](https://nodejs.org/)（Tauri CLI 所需）
+- [Rust](https://www.rust-lang.org/)（推荐使用 [rustup](https://rustup.rs) 安装）
+- Tauri CLI（`cargo install tauri-cli --version "^2"`）
 - Windows 10/11（目前仅支持 Windows）
+
+> 前端是纯 HTML/CSS/JS、没有构建步骤，所以不需要 Node.js。
 
 ### 构建步骤
 

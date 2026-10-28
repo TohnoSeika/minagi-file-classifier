@@ -1,12 +1,11 @@
 {
     "identifier": "default",
-    "description": "默认权限 —— 桃华为 Minagi 配置的基础能力",
+    "description": "默认权限 —— 只放行前端真正用到的能力：监听后端事件、启动窗口拖拽",
     "windows": ["main"],
     "permissions": [
-        "core:default",
         "core:event:allow-listen",
-        "core:event:allow-emit",
-        "core:event:default",
-        "core:window:allow-start-dragging"
+        "core:event:allow-unlisten",
+        "core:window:allow-start-dragging",
+        "core:window:allow-internal-toggle-maximize"
     ]
 }

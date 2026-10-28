@@ -1,4 +1,4 @@
-# ═══════════════════════════════════════════════════════
+﻿# ═══════════════════════════════════════════════════════
 # Minagi 文件分类助手 —— 固化打包脚本
 # 桃华帮 Minagi 写的哦 ✨
 # 以后每次打包都跑这个脚本，结果完全一致
@@ -113,11 +113,19 @@ $BundleNsis = "$ScriptDir\src-tauri\target\x86_64-pc-windows-msvc\release\bundle
 $OldNsisOutput = "$ScriptDir\src-tauri\target\release\nsis"
 $OldBundleNsis = "$ScriptDir\src-tauri\target\release\bundle\nsis"
 
+# 桃华定制：删除失败必须中止，不能一边报错一边打印「已清理」
+# 残留的安装包会被后面的版本校验误判，比直接停下更难查
 foreach ($Dir in @($NsisOutput, $BundleNsis, $OldNsisOutput, $OldBundleNsis)) {
-    if (Test-Path $Dir) {
-        Remove-Item -Recurse -Force $Dir -ErrorAction SilentlyContinue
-        Write-Host "  ✓ 已清理 $Dir" -ForegroundColor Green
+    if (-not (Test-Path $Dir)) { continue }
+    try {
+        Remove-Item -Recurse -Force $Dir -ErrorAction Stop
+    } catch {
+        Write-Host "  ✗ 清理失败：$Dir" -ForegroundColor Red
+        Write-Host "    $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "    可能有程序占用这个目录，关掉后再试一次吧。" -ForegroundColor DarkYellow
+        exit 1
     }
+    Write-Host "  ✓ 已清理 $Dir" -ForegroundColor Green
 }
 Write-Host ""
 
