@@ -78,7 +78,8 @@ body {
     position: relative;
     z-index: 0;               /* 桃华修复：创建独立堆叠上下文，让 body::before 的 z-index: -1 在 body 内部生效 */
     overflow: hidden;
-    padding: 16px 20px;
+    /* 桃华调整：四边统一 16px，控件到每条边的距离都一致，看着才稳 */
+    padding: 16px;
     font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
     font-weight: 400;
     color: var(--text);
@@ -97,8 +98,10 @@ body {
     display: flex;
     align-items: center;
     gap: 14px;
+    /* 桃华调整：顶栏高度 = 按钮高度，上方 16px 留白交给 body，
+       这样控件到上边缘的距离和到两侧、下边缘完全一样 */
     margin-bottom: 12px;
-    height: 48px;
+    height: 36px;
 }
 
 .drag-spacer {
@@ -291,7 +294,7 @@ body {
     grid-template-rows: repeat(2, 1fr);
     gap: 14px;
     width: 100%;
-    height: calc(100% - 56px);
+    height: calc(100% - 48px);   /* 顶栏 36 + 间距 12，改顶栏高度时这里要跟着走 */
 }
 
 /* ─── 玻璃卡片 ──────────────────────────────────── */
@@ -459,125 +462,179 @@ body {
     pointer-events: auto;
 }
 
+/* 桃华重做：窗口本身不留内边距，边缘交给标题栏和内容区，
+   这样滚动条不会压着卡片，四角也不会被内容顶破 */
 .modal {
     width: 500px;
     max-height: 84vh;
     user-select: none;
     -webkit-user-select: none;
-    background: rgba(255, 255, 255, 0.92);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border-radius: var(--radius-lg);
-    padding: 20px 22px;
-    box-shadow: 0 8px 40px rgba(60, 40, 35, 0.15);
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    overflow-y: auto;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
+    background: rgba(253, 250, 249, 0.96);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.85);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 18px 48px rgba(60, 40, 35, 0.16),
+                0 2px 8px rgba(60, 40, 35, 0.06);
+    overflow: hidden;
+    transform: translateY(6px) scale(0.985);
+    transition: transform 0.28s var(--ease-out);
 }
 
-.modal::-webkit-scrollbar { display: none; }
+.modal-overlay.show .modal {
+    transform: translateY(0) scale(1);
+}
 
 .modal-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding-bottom: 12px;
-    border-bottom: 1px solid rgba(0,0,0,0.05);
+    gap: 12px;
+    padding: 15px 16px 13px 22px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.75), rgba(255, 255, 255, 0));
+    border-bottom: 1px solid rgba(60, 40, 35, 0.06);
+    flex-shrink: 0;
 }
 
 .modal-header h2 {
     margin: 0;
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 600;
+    letter-spacing: 0.01em;
     color: var(--text);
 }
 
 .modal-close {
     cursor: pointer;
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 16px;
+    font-size: 17px;
+    line-height: 1;
     color: var(--text-dim);
-    transition: all 0.2s ease;
+    transition: background 0.2s ease, color 0.2s ease, transform 0.25s var(--ease-bounce);
 }
 
-.modal-close:hover { background: rgba(0,0,0,0.06); color: var(--danger); }
+.modal-close:hover {
+    background: rgba(60, 40, 35, 0.06);
+    color: var(--danger);
+    transform: rotate(90deg);
+}
 
 .modal-actions {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
 }
+
+/* 历史窗口右上角的「清空」，比普通按钮更轻 */
+.set-btn.modal-clear {
+    padding: 5px 12px;
+    background: rgba(60, 40, 35, 0.045);
+}
+.set-btn.modal-clear:hover {
+    background: var(--danger-ghost);
+    color: var(--danger);
+}
+
+/* ─── 模态框内容区 ──────────────────────────────── */
+/* 桃华注：这里千万别写 scrollbar-width / scrollbar-color，
+   一写 WebKit 的 ::-webkit-scrollbar 就整段失效，会变成系统灰条 */
+.settings-scroll {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    /* 上下留白交给首尾卡片的外边距：滚动区自己带内边距的话，
+       吸顶表头会差这 14px，滚动的行会从缝里露出来 */
+    padding: 0 12px 0 20px;
+    margin-right: 4px;
+    scrollbar-gutter: stable;
+}
+
+.settings-scroll > :first-child { margin-top: 14px; }
+.settings-scroll > :last-child  { margin-bottom: 18px; }
+
+.settings-scroll::-webkit-scrollbar { width: 6px; }
+.settings-scroll::-webkit-scrollbar-track { background: transparent; }
+.settings-scroll::-webkit-scrollbar-thumb {
+    background: rgba(60, 40, 35, 0.13);
+    border-radius: 3px;
+}
+.settings-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(60, 40, 35, 0.24);
+}
+
+/* 说明窗口更宽，内容是纯文字，不要套一层卡片 */
+.modal--guide { width: 620px; }
 
 /* ─── 设置卡片（Minagi Alarm 风格）──────────────── */
+/* 桃华重做：暖白窗口上用纯白卡片 + 一根细边框分层，
+   比原来的半透明白更容易看出边界；hover 只抬起阴影，不挪位置 */
 .set-card {
-    background: rgba(255, 255, 255, 0.68);
-    border: none;
+    background: #ffffff;
+    border: 1px solid rgba(60, 40, 35, 0.05);
     border-radius: 14px;
     padding: 14px 16px;
-    box-shadow: 0 1px 2px rgba(60, 40, 35, 0.06);
-    position: relative;
-    transition: transform 0.28s cubic-bezier(0.25, 0.46, 0.45, 0.94),
-                box-shadow 0.28s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+    box-shadow: 0 1px 2px rgba(60, 40, 35, 0.04);
+    flex-shrink: 0;
+    transition: box-shadow 0.28s var(--ease-smooth),
+                border-color 0.28s var(--ease-smooth);
 }
 
-/* 径向渐隐阴影 */
-.set-card::before {
-    content: '';
-    position: absolute;
-    bottom: -3px;
-    left: 5%;
-    right: 5%;
-    height: 16px;
-    background: radial-gradient(
-        ellipse 80% 100% at 50% 0%,
-        rgba(60, 40, 35, 0.08) 0%,
-        rgba(60, 40, 35, 0.03) 35%,
-        transparent 75%
-    );
-    filter: blur(4px);
-    pointer-events: none;
-    transition: all 0.28s cubic-bezier(0.25, 0.46, 0.45, 0.94);
-}
-
-.set-card:hover { transform: translateY(-2px); box-shadow: 0 2px 4px rgba(60, 40, 35, 0.07); }
-.set-card:hover::before {
-    bottom: -6px;
-    height: 24px;
-    background: radial-gradient(
-        ellipse 80% 100% at 50% 0%,
-        rgba(60, 40, 35, 0.12) 0%,
-        rgba(60, 40, 35, 0.05) 35%,
-        transparent 75%
-    );
-    filter: blur(7px);
+.set-card:hover {
+    border-color: rgba(var(--pink-rgb), 0.16);
+    box-shadow: 0 4px 14px rgba(60, 40, 35, 0.07);
 }
 
 .set-card__title {
-    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
     font-weight: 600;
+    letter-spacing: 0.01em;
     color: var(--text);
-    margin-bottom: 4px;
+    margin-bottom: 6px;
 }
 
 .set-card__desc {
     font-size: 11px;
+    line-height: 1.55;
     color: var(--text-dim);
     margin-bottom: 8px;
 }
 
-/* 设置按钮行 */
+/* 卡片里的按钮行 */
+.set-card__actions { padding: 8px 0 2px; }
+
+/* 快照状态提示，跟在按钮行下面 */
+.set-card__desc--info { margin: 6px 0 0; }
+
+/* 说明窗口的整块文字不套卡片 */
+.set-card--guide {
+    margin: 16px 20px 20px;
+    padding: 18px 20px;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+}
+
+.set-card--guide:hover { border: none; box-shadow: none; }
+
+/* 设置按钮行：上下都要留出气口，不然会贴着状态文字和滑块标题 */
 .set-btn-row {
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
+    margin: 14px 0 18px;
 }
 
 .set-btn {
@@ -592,6 +649,8 @@ body {
 }
 
 .set-btn:active { transform: scale(0.94); }
+.set-btn:disabled { opacity: 0.45; cursor: default; }
+.set-btn:disabled:active { transform: none; }
 
 .set-btn--sec {
     background: rgba(60, 40, 35, 0.05);
@@ -610,24 +669,35 @@ body {
     color: var(--danger);
 }
 
-/* 设置标签 */
+/* 设置标签：左标题右数值，两端对齐看着才整齐 */
 .set-label {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
     font-size: 11px;
     font-weight: 500;
     color: var(--text-dim);
     letter-spacing: 0.3px;
-    margin-bottom: 2px;
+    margin-bottom: 7px;
 }
 
 .set-label span {
-    font-weight: 400;
-    color: var(--text-dim);
+    font-weight: 600;
+    color: var(--pink);
+    font-variant-numeric: tabular-nums;
+}
+
+.set-btn-row + .set-label,
+.set-slider + .set-label {
+    margin-top: 14px;
 }
 
 /* 设置滑块 */
 .set-slider {
     width: 100%;
     height: 6px;
+    margin: 0;
     -webkit-appearance: none;
     appearance: none;
     background: rgba(60, 40, 35, 0.08);
@@ -637,15 +707,19 @@ body {
 }
 .set-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
+    border: 2px solid #fff;
     border-radius: 50%;
     background: var(--pink);
     cursor: pointer;
-    box-shadow: 0 2px 6px rgba(var(--pink-rgb), 0.25);
-    transition: transform 0.15s ease;
+    box-shadow: 0 2px 6px rgba(var(--pink-rgb), 0.35);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
-.set-slider::-webkit-slider-thumb:hover { transform: scale(1.2); }
+.set-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.15);
+    box-shadow: 0 2px 10px rgba(var(--pink-rgb), 0.45);
+}
 
 /* ─── 区域设置卡片列表 ──────────────────────────── */
 .zone-config-list {
@@ -734,6 +808,36 @@ body {
 .set-color-input:hover { border-color: var(--pink); }
 .set-color-input::-webkit-color-swatch-wrapper { padding: 0; }
 .set-color-input::-webkit-color-swatch { border-radius: 5px; border: none; }
+
+/* ─── 配置快照选择 ──────────────────────────────── */
+.snapshot-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.snapshot-select {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 10px;
+    border: 1px solid rgba(60, 40, 35, 0.10);
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.9);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.snapshot-select:hover { border-color: rgba(var(--pink-rgb), 0.35); }
+
+.snapshot-select:focus {
+    border-color: var(--pink);
+    box-shadow: 0 0 0 3px rgba(var(--pink-rgb), 0.12);
+}
 
 /* ─── 拖拽预览 ────────────────────────────────── */
 .drag-preview {

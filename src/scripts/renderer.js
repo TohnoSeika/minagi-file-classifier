@@ -306,12 +306,13 @@ listen('window-hiding', () => {
 // ─── 窗口拖拽 ──────────────────────────────────────
 // 桃华修复：交给系统原生拖拽（startDragging）
 // 以前每次 mousemove 都 invoke 一次 win_move，又慢又容易漂
-// 标题和空白区已经有 data-tauri-drag-region，这里补上顶栏剩下的空白
-const headerEl = document.querySelector('.header');
-
-headerEl.addEventListener('mousedown', (e) => {
+// 标题和空白区已经有 data-tauri-drag-region，这里补上顶栏以外的部分
+// 桃华补充：body 有 16px 内边距，最上面那条边不归 header 管，
+// 所以监听挂在 body 上，再限定只认窗口留白和顶栏
+document.body.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
     if (e.target.closest('button, input, .mode-switch, .header-right, [data-tauri-drag-region]')) return;
+    if (e.target !== document.body && !e.target.closest('.header')) return;
     void getCurrentWindow().startDragging();
 });
 
