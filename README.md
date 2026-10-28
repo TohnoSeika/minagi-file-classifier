@@ -1,5 +1,7 @@
 # Minagi 文件分类助手 ✨
 
+[![CI](https://github.com/TohnoSeika/minagi-file-classifier/actions/workflows/ci.yml/badge.svg)](https://github.com/TohnoSeika/minagi-file-classifier/actions/workflows/ci.yml)
+
 > 把文件拖进去，它就帮你分类好了——简单、漂亮、又快。
 
 一个 Windows 桌面工具，提供 **6 个可自定义的拖拽区域**，拖入文件或文件夹即可自动复制/剪切到目标位置。  
@@ -90,17 +92,19 @@ cd minagi-file-classifier
 
 ```
 minagi-file-classifier/
+├── .github/workflows/      # CI（编译检查 + 单元测试）
 ├── src/                    # 前端 (HTML/CSS/JS)
 │   ├── index.html         # 主页面
 │   ├── scripts/           # JS 脚本
 │   └── styles/            # CSS 样式
 ├── src-tauri/              # Tauri 后端 (Rust)
-│   ├── src/               # Rust 源码
+│   ├── src/               # Rust 源码（含单元测试）
 │   ├── nsis/              # NSIS 安装器定制模板
 │   ├── icons/             # 应用图标
 │   ├── capabilities/      # Tauri 权限配置
 │   ├── Cargo.toml         # Rust 依赖
 │   └── tauri.conf.json    # Tauri 配置
+├── screenshots/            # 界面截图
 ├── build.ps1              # 固化打包脚本
 └── README.md              # 本文件
 ```
@@ -108,6 +112,17 @@ minagi-file-classifier/
 ---
 
 ## 📋 更新记录
+
+### v2.1.1（开发中）
+- 🛡️ 安装器：旧版 Electron 残留改为按文件名清单清理，不再误删共享目录里的用户文件；修复完成页快捷方式勾选与 `/NS` 静默安装参数
+- 🐛 配置、历史与迁移写回改为临时文件 + rename 原子替换，配置损坏时自动回退到最新有效快照，迁移保留未知字段
+- 🐛 目录遍历加入路径去重与深度上限，junction / 符号链接套娃不再无限复制；任务标志改用 RAII 守卫，异常后不会卡在「正在处理」
+- 🐛 快照：恢复流程加锁、失败可回滚，背景图改用硬链接，自动清理孤儿图片
+- 🐛 修复快照信息显示、透明度 IPC 节流、标题明暗取样与进度条误拖窗口
+- ♿ 关闭的弹窗移出焦点顺序，开关支持键盘操作，补齐 dialog / switch 语义与 aria 标签，提升小字对比度
+- 🔒 应用权限从 `core:default` 收窄到前端实际使用的 4 项
+- 🧪 新增 GitHub Actions CI（编译检查 + 单元测试 + 前端语法检查）与 6 个 Rust 单元测试
+- 🔧 `build.ps1` 转为 UTF-8 with BOM，目录清理失败时直接中止
 
 ### v2.1.0
 - 🎨 重做设置与操作历史窗口：标题栏、卡片层次、滚动条与列布局全面整理
