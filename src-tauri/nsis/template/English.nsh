@@ -1,4 +1,6 @@
-﻿LangString addOrReinstall ${LANG_ENGLISH} "Add/Reinstall components"
+﻿; 桃华注：这个文件不会进入打包流程——Tauri 会在构建目录生成自己的 English.nsh。
+; 这里只作文案参考；真正生效的卸载页文案在 template/installer.nsi 里。
+LangString addOrReinstall ${LANG_ENGLISH} "Add/Reinstall components"
 LangString alreadyInstalled ${LANG_ENGLISH} "Already Installed"
 LangString alreadyInstalledLong ${LANG_ENGLISH} "${PRODUCTNAME} ${VERSION} is already installed. Select the operation you want to perform and click Next to continue."
 LangString appRunning ${LANG_ENGLISH} "{{product_name}} is running! Please close it first then try again."
@@ -24,4 +26,4 @@ LangString webview2DownloadSuccess ${LANG_ENGLISH} "WebView2 bootstrapper downlo
 LangString webview2Downloading ${LANG_ENGLISH} "Downloading WebView2 bootstrapper..."
 LangString webview2InstallError ${LANG_ENGLISH} "Error: Installing WebView2 failed with exit code $1"
 LangString webview2InstallSuccess ${LANG_ENGLISH} "WebView2 installed successfully"
-LangString deleteAppData ${LANG_ENGLISH} "保留用户配置和数据（区域路径、背景图、操作历史）"
+LangString deleteAppData ${LANG_ENGLISH} "删除应用数据（区域设置、背景图、历史记录）"

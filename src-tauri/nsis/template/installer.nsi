@@ -74,6 +74,53 @@ Var OldMainBinaryName
 ; 桃华定制：保存旧安装路径，避免卸载后注册表丢失找不到
 Var OldInstallPath
 
+; ═══════════════════════════════════════════════════
+; 桃华修复：旧 Electron 版残留清理
+; 安装目录是用户自己选的，不能再对 $INSTDIR / $OldInstallPath 用
+; *.dll、*.pak 这类通配符——选到 D:\Tools 这种共享目录时，
+; 通配符会把别人的文件也一起删掉。这里只删能叫出名字的文件，
+; 而且要先确认目录里真的有旧版 exe 才动手。
+; ═══════════════════════════════════════════════════
+!macro DeleteElectronLeftovers dir
+  Delete "${dir}\Minagi文件分类助手.exe"
+  Delete "${dir}\Uninstall Minagi文件分类助手.exe"
+  ; Electron / Chromium 运行时文件
+  Delete "${dir}\chrome_100_percent.pak"
+  Delete "${dir}\chrome_200_percent.pak"
+  Delete "${dir}\resources.pak"
+  Delete "${dir}\icudtl.dat"
+  Delete "${dir}\snapshot_blob.bin"
+  Delete "${dir}\v8_context_snapshot.bin"
+  Delete "${dir}\ffmpeg.dll"
+  Delete "${dir}\libEGL.dll"
+  Delete "${dir}\libGLESv2.dll"
+  Delete "${dir}\d3dcompiler_47.dll"
+  Delete "${dir}\dxcompiler.dll"
+  Delete "${dir}\dxil.dll"
+  Delete "${dir}\vk_swiftshader.dll"
+  Delete "${dir}\vulkan-1.dll"
+  Delete "${dir}\chrome_crashpad_handler.exe"
+  Delete "${dir}\notification_helper.exe"
+  Delete "${dir}\version"
+  Delete "${dir}\vk_swiftshader_icd.json"
+  Delete "${dir}\LICENSE"
+  Delete "${dir}\LICENSES.chromium.html"
+  RMDir /r "${dir}\resources"
+  RMDir /r "${dir}\locales"
+  RMDir /r "${dir}\swiftshader"
+!macroend
+
+!macro CleanOldElectronIfPresent dir
+  ; 空路径或者盘根（D:\）一律不碰
+  StrLen $R8 "${dir}"
+  ${If} $R8 > 3
+    ${If} ${FileExists} "${dir}\Minagi文件分类助手.exe"
+    ${OrIf} ${FileExists} "${dir}\Uninstall Minagi文件分类助手.exe"
+      !insertmacro DeleteElectronLeftovers "${dir}"
+    ${EndIf}
+  ${EndIf}
+!macroend
+
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
 OutFile "${OUTFILE}"
@@ -209,7 +256,9 @@ Function AutoHandlePreviousInstall
     ReadRegStr $R0 HKLM "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$1" "UninstallString"
     ${StrCase} $R1 $R0 "L"
     ${StrLoc} $R0 $R1 "msiexec" ">"
-    StrCmp $R0 0 0 wix_scan_done
+    ; 桃华修复：StrLoc 找不到时返回空串，找到时返回位置（可能是 0）。
+    ; 旧写法只在位置为 0 时继续，第一个同名项不是 MSI 就整轮扫描结束了
+    StrCmp $R0 "" wix_scan
     StrCpy $WixMode 1
     StrCpy $R6 "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$1"
     Goto uninstall_prev
@@ -229,7 +278,7 @@ Function AutoHandlePreviousInstall
       ReadRegStr $R0 HKLM "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$1" "UninstallString"
       ${StrCase} $R1 $R0 "L"
       ${StrLoc} $R0 $R1 "msiexec" ">"
-      StrCmp $R0 0 0 wix_scan32_done
+      StrCmp $R0 "" wix_scan32
       StrCpy $WixMode 1
       StrCpy $R6 "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$1"
       Goto uninstall_prev
@@ -344,21 +393,10 @@ uninstall_prev:
     ; ExecWait '"$R1" /S' $0
     ; 直接用手动清理替代，下面的代码更彻底也更安全
 
-    ; 桃华定制：强制清理旧 Electron 版残留文件
-    ; 旧版 exe 名称与新版不同，必须显式删除
-    Delete "$OldInstallPath\Minagi文件分类助手.exe"
-    Delete "$OldInstallPath\Uninstall Minagi文件分类助手.exe"
-    ; Electron 运行时文件
-    Delete "$OldInstallPath\*.pak"
-    Delete "$OldInstallPath\*.bin"
-    Delete "$OldInstallPath\*.dll"
-    Delete "$OldInstallPath\*.dat"
-    Delete "$OldInstallPath\LICENSE*"
-    Delete "$OldInstallPath\LICENSES.chromium.html"
-    Delete "$OldInstallPath\version"
-    Delete "$OldInstallPath\vk_swiftshader_icd.json"
-    RMDir /r "$OldInstallPath\resources"
-    RMDir /r "$OldInstallPath\locales"
+    ; 桃华修复：不再用 *.dll / *.pak 通配符扫用户目录——
+    ; $OldInstallPath 为空或指向盘根时，通配符会落到盘根上。
+    ; 先确认目录里真有旧版 exe，再按清单删除
+    !insertmacro CleanOldElectronIfPresent "$OldInstallPath"
 
     ; 清理旧版注册表项
     ${If} $ElectronHive == "HKLM64"
@@ -458,7 +496,7 @@ Function un.ConfirmShow ; Add add a `Delete app data` check box
   IntOp $5 $5 / 96
   IntOp $6 $6 / 96
   IntOp $7 $7 / 96
-  System::Call 'user32::CreateWindowEx(i r3, w "${__NSD_CheckBox_CLASS}", w "$(deleteAppData)", i ${__NSD_CheckBox_STYLE}, i r4, i r5, i r6, i r7, p r1, i0, i0, i0) i .s'
+  System::Call 'user32::CreateWindowEx(i r3, w "${__NSD_CheckBox_CLASS}", w "$(deleteAppDataCustom)", i ${__NSD_CheckBox_STYLE}, i r4, i r5, i r6, i r7, p r1, i0, i0, i0) i .s'
   Pop $DeleteAppDataCheckbox
   SendMessage $HWNDPARENT ${WM_GETFONT} 0 0 $1
   SendMessage $DeleteAppDataCheckbox ${WM_SETFONT} $1 1
@@ -479,6 +517,11 @@ FunctionEnd
 !insertmacro MUI_LANGUAGE "English"
 !insertmacro MUI_RESERVEFILE_LANGDLL
   !include "English.nsh"
+
+; 桃华修复：Tauri 每次打包都会在构建目录生成自己的 English.nsh，
+; 模板里那份同名文件根本进不了打包流程。卸载页的复选框文案在这里定义才生效，
+; 而且要和下面的逻辑一致：勾选 = 删除数据（默认不勾选 = 保留）
+LangString deleteAppDataCustom ${LANG_ENGLISH} "删除应用数据（区域设置、背景图、历史记录）"
 
 Function .onInit
   ${GetOptions} $CMDLINE "/P" $PassiveMode
@@ -644,93 +687,6 @@ Section WebView2
   ${EndIf}
 SectionEnd
 
-; ═══════════════════════════════════════════════════
-; 桃华定制：递归隐藏安装目录中所有图片和图标文件
-; 参考 Minagi_Alarm 的 ASAR 打包思路 —— Tauri 版通过文件属性实现同等效果
-; 安装后的文件夹里，用户不会看到任何散落的 .ico .png 等文件 ✨
-; ═══════════════════════════════════════════════════
-Function HideImageFiles
-  Exch $0          ; $0 = 当前目录路径
-  Push $1          ; 搜索句柄
-  Push $2          ; 文件名
-
-  ; —— 依次处理每种图片/图标扩展名 ——
-  FindFirst $1 $2 "$0\*.ico"
-  ${DoWhile} $2 != ""
-    SetFileAttributes "$0\$2" HIDDEN
-    FindNext $1 $2
-  ${Loop}
-  FindClose $1
-
-  FindFirst $1 $2 "$0\*.png"
-  ${DoWhile} $2 != ""
-    SetFileAttributes "$0\$2" HIDDEN
-    FindNext $1 $2
-  ${Loop}
-  FindClose $1
-
-  FindFirst $1 $2 "$0\*.jpg"
-  ${DoWhile} $2 != ""
-    SetFileAttributes "$0\$2" HIDDEN
-    FindNext $1 $2
-  ${Loop}
-  FindClose $1
-
-  FindFirst $1 $2 "$0\*.jpeg"
-  ${DoWhile} $2 != ""
-    SetFileAttributes "$0\$2" HIDDEN
-    FindNext $1 $2
-  ${Loop}
-  FindClose $1
-
-  FindFirst $1 $2 "$0\*.gif"
-  ${DoWhile} $2 != ""
-    SetFileAttributes "$0\$2" HIDDEN
-    FindNext $1 $2
-  ${Loop}
-  FindClose $1
-
-  FindFirst $1 $2 "$0\*.bmp"
-  ${DoWhile} $2 != ""
-    SetFileAttributes "$0\$2" HIDDEN
-    FindNext $1 $2
-  ${Loop}
-  FindClose $1
-
-  FindFirst $1 $2 "$0\*.webp"
-  ${DoWhile} $2 != ""
-    SetFileAttributes "$0\$2" HIDDEN
-    FindNext $1 $2
-  ${Loop}
-  FindClose $1
-
-  FindFirst $1 $2 "$0\*.svg"
-  ${DoWhile} $2 != ""
-    SetFileAttributes "$0\$2" HIDDEN
-    FindNext $1 $2
-  ${Loop}
-  FindClose $1
-
-  ; —— 递归处理子目录 ——
-  FindFirst $1 $2 "$0\*.*"
-  ${DoWhile} $2 != ""
-    ${If} $2 != "."
-    ${AndIf} $2 != ".."
-      ${If} ${FileExists} "$0\$2\*.*"
-        Push "$0\$2"
-        Call HideImageFiles
-      ${EndIf}
-    ${EndIf}
-    FindNext $1 $2
-  ${Loop}
-  FindClose $1
-
-  Pop $2
-  Pop $1
-  Pop $0
-FunctionEnd
-
-
 Section Install
   SetOutPath $INSTDIR
 
@@ -754,11 +710,6 @@ Section Install
   ; Create uninstaller
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
-  ; 桃华定制：隐藏安装目录中所有图片和图标文件
-  ; 参考 Minagi_Alarm 做法 —— 用户看不到散落的图像文件
-  Push $INSTDIR
-  Call HideImageFiles
-
   ; Save $INSTDIR in registry for future installations
   WriteRegStr SHCTX "${MANUPRODUCTKEY}" "" $INSTDIR
 
@@ -774,20 +725,9 @@ Section Install
   ${AndIf} $OldMainBinaryName != "${MAINBINARYNAME}.exe"
     Delete "$INSTDIR\$OldMainBinaryName"
   ${EndIf}
-  ; 桃华定制：始终强制清理旧 Electron 版所有残留文件
-  ; 无论 ElectronMode 是否触发，安装时都要清理（防止旧注册表已丢失的情况）
-  Delete "$INSTDIR\Minagi文件分类助手.exe"
-  Delete "$INSTDIR\Uninstall Minagi文件分类助手.exe"
-  Delete "$INSTDIR\*.pak"
-  Delete "$INSTDIR\*.bin"
-  Delete "$INSTDIR\*.dll"
-  Delete "$INSTDIR\*.dat"
-  Delete "$INSTDIR\LICENSE*"
-  Delete "$INSTDIR\LICENSES.chromium.html"
-  Delete "$INSTDIR\version"
-  Delete "$INSTDIR\vk_swiftshader_icd.json"
-  RMDir /r "$INSTDIR\resources"
-  RMDir /r "$INSTDIR\locales"
+  ; 桃华修复：只有目录里确实躺着旧 Electron 版时才清理，
+  ; 而且只删已知文件名，避免误伤共享安装目录里的其他程序
+  !insertmacro CleanOldElectronIfPresent "$INSTDIR"
 
   ; 桃华定制：枚举桌面快捷方式，删除目标路径位于本安装目录内的旧快捷方式（包括乱码名称）
   ; 通配符无法匹配 ANSI 模式创建的乱码文件名，必须枚举后检查目标路径的父目录
@@ -887,14 +827,9 @@ Section Install
   Delete "$SMPROGRAMS\Minagi 文件分类助手.lnk"
   SetShellVarContext current
 
-  ; 桃华定制：创建新版桌面快捷方式
-  CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-  !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
-
-  ; 桃华定制：创建新版开始菜单快捷方式
-  CreateShortcut "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-  !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\${PRODUCTNAME}.lnk"
-
+  ; 桃华修复：快捷方式交给下面的 CreateOrUpdate* 统一创建。
+  ; 以前这里先无条件建一遍，完成页的「创建桌面快捷方式」复选框
+  ; 和 /NS 参数就都形同虚设了
   ; Save current MAINBINARYNAME for future updates
   WriteRegStr SHCTX "${UNINSTKEY}" "MainBinaryName" "${MAINBINARYNAME}.exe"
 
@@ -1000,8 +935,9 @@ Section Uninstall
   ; Delete uninstaller
   Delete "$INSTDIR\uninstall.exe"
 
-  ; 使用 /r 确保隐藏的图片/图标文件也被清理
-  RMDir /r "$INSTDIR"
+  ; 桃华修复：安装目录是用户自己选的，不能整个目录强删。
+  ; 只清掉本程序的文件，目录空了才删——共享目录里的其他内容要留下
+  RMDir "$INSTDIR"
 
   ; Remove shortcuts if not updating
   ${If} $UpdateMode <> 1

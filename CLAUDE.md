@@ -15,10 +15,9 @@ Minagi_File_Classifier_Tauri_Builder_20260616-2.0/
 │   ├── Cargo.toml               # Rust 依赖
 │   ├── src/                     # Rust 源码
 │   ├── nsis/                    # NSIS 安装器定制
-│   │   ├── installer.nsh        # 自定义卸载页面
 │   │   └── template/            # NSIS 模板文件
 │   │       ├── installer.nsi    # ★ 主安装脚本（自定义模板）
-│   │       ├── English.nsh      # 英文文案
+│   │       ├── English.nsh      # 文案参考（打包时不使用）
 │   │       ├── FileAssociation.nsh
 │   │       └── utils.nsh
 │   └── icons/                   # 应用图标
@@ -63,6 +62,7 @@ Minagi_File_Classifier_Tauri_Builder_20260616-2.0/
 - `tauri.conf.json` 中 `bundle.windows.nsis.template` 指向此文件
 - 如需修改安装逻辑，**只改这个模板文件**，并记录修改理由
 - 桃华的定制内容用注释块标注 `; 桃华定制：`
+- **注意**：Tauri 打包时只读取 `installer.nsi`；`English.nsh` / `utils.nsh` / `FileAssociation.nsh` 由 Tauri 在构建目录重新生成，模板目录里的同名文件不参与打包。卸载页文案因此写在 `installer.nsi` 里
 
 ## 技术要点
 
