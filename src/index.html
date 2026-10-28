@@ -24,7 +24,8 @@
 
         <!-- 不可拖拽的右侧控件组（没有 data-tauri-drag-region 属性 = 不可拖拽） -->
         <div class="header-right">
-            <div class="mode-switch" id="mode-switch">
+            <div class="mode-switch" id="mode-switch" role="switch" aria-checked="false"
+                 aria-label="复制或剪切模式" tabindex="0">
                 <span class="label copy-active" id="label-copy">📋 复制</span>
                 <div class="track copy" id="mode-track">
                     <div class="knob"></div>
@@ -62,10 +63,10 @@
 
     <!-- ═══ 设置模态框 ═══ -->
     <div class="modal-overlay" id="modal-overlay">
-        <div class="modal">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
             <div class="modal-header">
-                <h2>⚙️ 设置</h2>
-                <span class="modal-close" id="modal-close">&times;</span>
+                <h2 id="settings-title">⚙️ 设置</h2>
+                <button type="button" class="modal-close" id="modal-close" aria-label="关闭设置">&times;</button>
             </div>
             <div class="settings-scroll">
 
@@ -88,10 +89,10 @@
                 </div>
                 <input type="file" id="input-global-bg" accept="image/*" hidden>
 
-                <div class="set-label">背景图片透明度 <span id="bg-opacity-value">40%</span></div>
+                <label class="set-label" for="slider-bg-opacity">背景图片透明度 <span id="bg-opacity-value">40%</span></label>
                 <input class="set-slider" type="range" id="slider-bg-opacity" min="0.05" max="1" step="0.05">
 
-                <div class="set-label">软件界面透明度 <span id="opacity-value">90%</span></div>
+                <label class="set-label" for="slider-opacity">软件界面透明度 <span id="opacity-value">90%</span></label>
                 <input class="set-slider" type="range" id="slider-opacity" min="0.1" max="1" step="0.05">
             </div>
 
@@ -100,7 +101,7 @@
                 <div class="set-card__title">🎨 主题颜色</div>
                 <div class="set-card__desc">调整界面的主色调</div>
                 <div class="set-color-row">
-                    <input type="color" class="set-color-input" id="input-theme-color" value="#e87890">
+                    <input type="color" class="set-color-input" id="input-theme-color" value="#e87890" aria-label="主题颜色">
                     <button class="set-btn set-btn--ghost" id="btn-reset-theme">恢复默认</button>
                 </div>
             </div>
@@ -108,18 +109,21 @@
             <!-- 其他选项 -->
             <div class="set-card">
                 <div class="set-card__title">⚙ 其他选项</div>
-                <label class="set-toggle-row">
+                <button type="button" class="set-toggle-row" id="toggle-chime"
+                        role="switch" aria-checked="true">
                     <span>操作完成提示音</span>
-                    <div class="toggle toggle--on" id="toggle-chime"></div>
-                </label>
-                <label class="set-toggle-row">
+                    <span class="toggle toggle--on" aria-hidden="true"></span>
+                </button>
+                <button type="button" class="set-toggle-row" id="toggle-minimize-tray"
+                        role="switch" aria-checked="false">
                     <span>最小化时隐藏到托盘</span>
-                    <div class="toggle" id="toggle-minimize-tray"></div>
-                </label>
-                <label class="set-toggle-row">
+                    <span class="toggle" aria-hidden="true"></span>
+                </button>
+                <button type="button" class="set-toggle-row" id="toggle-close-tray"
+                        role="switch" aria-checked="true">
                     <span>关闭时隐藏到托盘</span>
-                    <div class="toggle toggle--on" id="toggle-close-tray"></div>
-                </label>
+                    <span class="toggle toggle--on" aria-hidden="true"></span>
+                </button>
             </div>
 
             <!-- 区域个性化 -->
@@ -133,7 +137,7 @@
                 <div class="set-card__title">📸 配置快照</div>
                 <div class="set-card__desc">每次改区域名、路径或背景图时自动存档，最多保留 7 份</div>
                 <div class="snapshot-row">
-                    <select id="snapshot-select" class="snapshot-select">
+                    <select id="snapshot-select" class="snapshot-select" aria-label="选择要恢复的配置快照">
                         <option value="">— 选择快照 —</option>
                     </select>
                     <button class="set-btn set-btn--sec" id="btn-restore-snapshot" disabled>🔄 恢复此配置</button>
@@ -159,10 +163,10 @@
 
     <!-- ═══ 操作说明弹出框 ═══ -->
     <div class="modal-overlay" id="guide-overlay">
-        <div class="modal modal--guide">
+        <div class="modal modal--guide" role="dialog" aria-modal="true" aria-labelledby="guide-title">
             <div class="modal-header">
-                <h2>📖 操作说明</h2>
-                <span class="modal-close" id="guide-close">&times;</span>
+                <h2 id="guide-title">📖 操作说明</h2>
+                <button type="button" class="modal-close" id="guide-close" aria-label="关闭操作说明">&times;</button>
             </div>
             <div class="set-card set-card--guide">
                 <p class="guide-text">⚙️ 点击设置按钮自定义软件其他选项。</p>
@@ -177,12 +181,12 @@
 
     <!-- ═══ 操作历史模态框 ═══ -->
     <div class="modal-overlay" id="history-overlay">
-        <div class="modal">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
             <div class="modal-header">
-                <h2>🕐 操作历史</h2>
+                <h2 id="history-title">🕐 操作历史</h2>
                 <div class="modal-actions">
                     <button class="set-btn set-btn--ghost modal-clear" id="btn-clear-history">清空</button>
-                    <span class="modal-close" id="history-close">&times;</span>
+                    <button type="button" class="modal-close" id="history-close" aria-label="关闭操作历史">&times;</button>
                 </div>
             </div>
             <div class="settings-scroll">

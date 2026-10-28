@@ -6,10 +6,11 @@
 ///   - 不再打包 Chromium，体积从 366MB 降到 ~10MB
 ///   - 内存占用从 ~200MB 降到 ~50MB
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -140,6 +141,8 @@ struct ProgressPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     count: Option<usize>,
 }
 
@@ -151,11 +154,30 @@ struct CancelState(Arc<AtomicBool>);
 /// 任务锁 —— 避免多个复制/剪切任务互相踩进度
 struct TaskState(Arc<AtomicBool>);
 
+/// 任务标志的守卫：不管正常结束、提前返回还是 panic，
+/// 离开作用域都会自动复位。以前靠每个分支手工 store(false)，
+/// 漏掉一处就会一直报「正在处理上一批文件」
+struct RunningGuard(Arc<AtomicBool>);
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// 恢复锁 —— 同一时间只允许一个快照恢复任务
+struct RestoreState(Mutex<()>);
+
 /// 配置缓存 —— 避免频繁读文件
 struct ConfigState(Mutex<Config>);
 
 /// 操作历史 —— 最多 50 条
 struct HistoryState(Mutex<Vec<HistoryEntry>>);
+
+/// 历史文件锁 —— 「追加一条」和「清空」不许交错
+/// 桃华修复：以前读-改-写没有锁，清空的同时刚好完成一批，
+/// 旧记录会被整份写回来
+struct HistoryFileLock(Mutex<()>);
 
 // ─── 工具函数 ─────────────────────────────────────
 
@@ -190,15 +212,38 @@ fn get_unique_path(target_path: &Path) -> PathBuf {
     }
 }
 
+/// 递归遍历的深度上限
+/// 桃华修复：junction / 符号链接可以绕成环，没有上限的话会一直往下走
+const MAX_WALK_DEPTH: usize = 64;
+
+/// 记下一个目录的规范路径，已经走过就返回 false
+/// 链接指回已经访问过的目录时，靠它把循环截断
+fn mark_visited(path: &Path, visited: &mut HashSet<PathBuf>) -> bool {
+    let key = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    visited.insert(key)
+}
+
 /// 递归统计文件/文件夹内的总字节数
 fn count_bytes(path: &Path) -> u64 {
+    let mut visited = HashSet::new();
+    count_bytes_guarded(path, 0, &mut visited)
+}
+
+fn count_bytes_guarded(path: &Path, depth: usize, visited: &mut HashSet<PathBuf>) -> u64 {
+    if depth > MAX_WALK_DEPTH {
+        return 0;
+    }
+
     match fs::metadata(path) {
         Ok(meta) if meta.is_dir() => {
+            if !mark_visited(path, visited) {
+                return 0;
+            }
             fs::read_dir(path)
                 .map(|entries| {
                     entries
                         .filter_map(|e| e.ok())
-                        .map(|e| count_bytes(&e.path()))
+                        .map(|e| count_bytes_guarded(&e.path(), depth + 1, visited))
                         .sum()
                 })
                 .unwrap_or(0)
@@ -220,6 +265,79 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
         fs::remove_dir_all(path)
     } else {
         fs::remove_file(path)
+    }
+}
+
+/// 桃华加固：先写临时文件再改名替换
+/// 直接 fs::write 会先截断再写，写到一半断电/被杀进程就只剩半截 JSON，
+/// 下次启动连配置都读不出来
+fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    // 临时文件名带序号：两次保存撞在一起也不会写同一个文件
+    static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let temp = path.with_extension(format!("json.tmp{}", seq));
+
+    fs::write(&temp, contents)?;
+
+    if let Err(e) = fs::rename(&temp, path) {
+        let _ = fs::remove_file(&temp);
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+/// 目标是否落在源目录内部（含相等）
+/// 桃华修复：这种情况下复制会把刚建出来的目标目录再枚举一遍，一层层套娃
+/// 用规范路径比较，junction 和符号链接也能一起解开
+fn target_is_inside(source: &Path, target: &Path) -> bool {
+    let Ok(source) = fs::canonicalize(source) else {
+        return false;
+    };
+    let Ok(target) = fs::canonicalize(target) else {
+        return false;
+    };
+    target == source || target.starts_with(&source)
+}
+
+/// 找最新一份能读出来的快照配置
+/// 桃华加固：config.json 损坏时用它兜底，总比界面空着好
+fn latest_valid_config(data_dir: &Path) -> Option<Config> {
+    let snapshots_dir = data_dir.join(SNAPSHOTS_DIR);
+
+    let mut snapshots: Vec<(u64, PathBuf)> = fs::read_dir(&snapshots_dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            Some((snapshot_seconds(&path)?, path))
+        })
+        .collect();
+
+    snapshots.sort_by(|a, b| b.0.cmp(&a.0));
+
+    snapshots.into_iter().find_map(|(_, path)| {
+        fs::read_to_string(path.join("config.json"))
+            .ok()
+            .and_then(|content| serde_json::from_str(&content).ok())
+    })
+}
+
+/// 把逐项失败汇总成一句能塞进 toast 的话
+fn format_warning_summary(warnings: &[String]) -> String {
+    const MAX_SHOWN: usize = 3;
+
+    let shown = warnings
+        .iter()
+        .take(MAX_SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("；");
+
+    if warnings.len() > MAX_SHOWN {
+        format!("{}；还有 {} 个没成功", shown, warnings.len() - MAX_SHOWN)
+    } else {
+        shown
     }
 }
 
@@ -285,24 +403,96 @@ fn create_snapshot(data_dir: &Path) {
     if images_dir.exists() {
         let snap_images = snap_dir.join("images");
         let _ = fs::create_dir_all(&snap_images);
-        copy_dir_content(&images_dir, &snap_images);
+        // 快照只是尽力而为，失败不影响主流程
+        let _ = link_or_copy_dir(&images_dir, &snap_images);
     }
 
     cleanup_snapshots(&snapshots_dir);
 }
 
 /// 递归复制目录内容
-fn copy_dir_content(src: &Path, dst: &Path) {
-    if let Ok(entries) = fs::read_dir(src) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let dest = dst.join(entry.file_name());
-            if path.is_dir() {
-                let _ = fs::create_dir_all(&dest);
-                copy_dir_content(&path, &dest);
-            } else {
-                let _ = fs::copy(&path, &dest);
+/// 桃华修复：错误交回给调用者。快照恢复要靠它判断有没有复制完整，
+/// 以前全部 `let _` 吞掉，失败了也当成功
+fn copy_dir_content(src: &Path, dst: &Path) -> std::io::Result<()> {
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let dest = dst.join(entry.file_name());
+
+        if path.is_dir() {
+            fs::create_dir_all(&dest)?;
+            copy_dir_content(&path, &dest)?;
+        } else {
+            fs::copy(&path, &dest)?;
+        }
+    }
+    Ok(())
+}
+
+/// 桃华优化：快照图片用硬链接指回当前图片，同一份数据不再复制七遍。
+/// 硬链接不成功（极少数文件系统）就老老实实复制
+fn link_or_copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let dest = dst.join(entry.file_name());
+
+        if path.is_dir() {
+            link_or_copy_dir(&path, &dest)?;
+        } else if fs::hard_link(&path, &dest).is_err() {
+            fs::copy(&path, &dest)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// 把配置里引用到的图片文件名收集起来
+fn collect_image_refs(config: &Config, into: &mut HashSet<String>) {
+    let backgrounds = std::iter::once(&config.global_bg)
+        .chain(config.zones.iter().map(|zone| &zone.bg));
+
+    for background in backgrounds {
+        if let Some(name) = Path::new(background).file_name() {
+            into.insert(name.to_string_lossy().to_string());
+        }
+    }
+}
+
+/// 清理不再被任何配置（当前 + 所有快照）引用的背景图
+/// 桃华补充：以前换一次背景就留一个文件，磁盘只增不减
+fn cleanup_orphan_images(data_dir: &Path, current: &Config) {
+    let images_dir = data_dir.join("images");
+    let Ok(entries) = fs::read_dir(&images_dir) else {
+        return;
+    };
+
+    let mut keep = HashSet::new();
+    collect_image_refs(current, &mut keep);
+
+    // 快照里还引用着的图片不能删，不然恢复出来会缺图
+    if let Ok(snapshots) = fs::read_dir(data_dir.join(SNAPSHOTS_DIR)) {
+        for entry in snapshots.flatten() {
+            let config_path = entry.path().join("config.json");
+            let Ok(text) = fs::read_to_string(config_path) else {
+                continue;
+            };
+            if let Ok(config) = serde_json::from_str::<Config>(&text) {
+                collect_image_refs(&config, &mut keep);
             }
+        }
+    }
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !keep.contains(&name) {
+            let _ = fs::remove_file(&path);
         }
     }
 }
@@ -383,23 +573,45 @@ fn copy_folder_recursive(
     on_bytes: &mut dyn FnMut(u64),
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
+    let mut visited = HashSet::new();
+    copy_folder_guarded(source, dest, on_bytes, cancelled, 0, &mut visited)
+}
+
+/// 桃华修复：和 count_bytes 一样防链接环。
+/// 太深或者绕回已经访问过的目录就跳过这一支，不跟着无限复制
+fn copy_folder_guarded(
+    source: &Path,
+    dest: &Path,
+    on_bytes: &mut dyn FnMut(u64),
+    cancelled: &AtomicBool,
+    depth: usize,
+    visited: &mut HashSet<PathBuf>,
+) -> Result<(), String> {
     if cancelled.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
+    }
+    if depth > MAX_WALK_DEPTH {
+        return Ok(());
     }
 
     let meta = fs::metadata(source).map_err(|e| format!("无法访问: {}", e))?;
 
     if meta.is_dir() {
+        if !mark_visited(source, visited) {
+            return Ok(());
+        }
         fs::create_dir_all(dest).map_err(|e| format!("无法创建目录: {}", e))?;
 
         let entries = fs::read_dir(source).map_err(|e| format!("无法读取目录: {}", e))?;
         for entry in entries {
             let entry = entry.map_err(|e| e.to_string())?;
-            copy_folder_recursive(
+            copy_folder_guarded(
                 &entry.path(),
                 &dest.join(entry.file_name()),
                 on_bytes,
                 cancelled,
+                depth + 1,
+                visited,
             )?;
         }
     } else {
@@ -421,6 +633,9 @@ fn do_move_files(
     cancelled: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
 ) {
+    // 桃华修复：任务标志交给 Drop 复位，panic 也不会把软件卡在「忙」状态
+    let _running_guard = RunningGuard(running);
+
     let target = Path::new(&target_dir);
     if !target.exists() || !target.is_dir() {
         let _ = app_handle.emit(
@@ -431,11 +646,31 @@ fn do_move_files(
                 percent: None,
                 current: None,
                 error: Some("目标文件夹不存在呢……".into()),
+                warning: None,
                 count: None,
             },
         );
-        running.store(false, Ordering::SeqCst);
         return;
+    }
+
+    // 桃华修复：目标在源目录里面时，复制会把刚建出来的目标再枚举一遍，
+    // 一层层套娃直到盘满。动手前先算清楚，别等写满了才发现
+    for source_path in &file_paths {
+        if target_is_inside(Path::new(source_path), target) {
+            let _ = app_handle.emit(
+                "task-progress",
+                ProgressPayload {
+                    status: "error".into(),
+                    total: None,
+                    percent: None,
+                    current: None,
+                    error: Some("不能把文件夹放进它自己里面呢……换一个目标试试".into()),
+                    warning: None,
+                    count: None,
+                },
+            );
+            return;
+        }
     }
 
     let total_bytes = count_bytes_bulk(&file_paths);
@@ -448,6 +683,7 @@ fn do_move_files(
             percent: None,
             current: None,
             error: None,
+            warning: None,
             count: None,
         },
     );
@@ -474,6 +710,7 @@ fn do_move_files(
                     percent: Some(percent),
                     current: Some(bytes_done),
                     error: None,
+                    warning: None,
                     count: None,
                 },
             );
@@ -481,15 +718,23 @@ fn do_move_files(
         }
     };
 
+    // 桃华修复：一个文件失败不再中断整批，记下来继续处理剩下的
+    let mut done_paths: Vec<String> = Vec::new();
+    let mut done_names: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
     for source_path_str in &file_paths {
         if cancelled.load(Ordering::Relaxed) {
             break;
         }
 
         let source = Path::new(source_path_str);
-        let base_name = source.file_name().unwrap_or_default();
-        let raw_dest = target.join(base_name);
-        let dest_path = get_unique_path(&raw_dest);
+        let base_name = source
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let dest_path = get_unique_path(&target.join(&base_name));
 
         let mut moved = false;
 
@@ -514,43 +759,26 @@ fn do_move_files(
                 if e == "cancelled" {
                     break;
                 }
-                let _ = app_handle.emit(
-                    "task-progress",
-                    ProgressPayload {
-                        status: "error".into(),
-                        total: None,
-                        percent: None,
-                        current: None,
-                        error: Some(e),
-                        count: None,
-                    },
-                );
-                running.store(false, Ordering::SeqCst);
-                return;
+
+                // 一个文件失败不影响后面的，最后一起汇报
+                warnings.push(format!("「{}」没能处理：{}", base_name, e));
+                continue;
             }
 
             // 剪切模式下拷贝完成后删除源文件
             if mode == "cut" && !cancelled.load(Ordering::Relaxed) {
                 // 桃华修复：删除失败要告诉用户，不能让人以为剪切成功
                 if let Err(e) = remove_path(source) {
-                    let _ = app_handle.emit(
-                        "task-progress",
-                        ProgressPayload {
-                            status: "warning".into(),
-                            total: None,
-                            percent: None,
-                            current: None,
-                            error: Some(format!(
-                                "「{}」已复制，但源文件删除失败：{}",
-                                base_name.to_string_lossy(),
-                                e
-                            )),
-                            count: None,
-                        },
-                    );
+                    warnings.push(format!(
+                        "「{}」已复制，但源文件删除失败：{}",
+                        base_name, e
+                    ));
                 }
             }
         }
+
+        done_paths.push(source_path_str.clone());
+        done_names.push(base_name);
     }
 
     if cancelled.load(Ordering::Relaxed) {
@@ -562,35 +790,28 @@ fn do_move_files(
                 percent: None,
                 current: None,
                 error: None,
+                warning: None,
                 count: None,
             },
         );
-        running.store(false, Ordering::SeqCst);
     } else {
-        // ── 记录操作历史 ──
-        let file_names: Vec<String> = file_paths
-            .iter()
-            .map(|p| {
-                Path::new(p)
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            })
-            .collect();
+        // ── 只把真正处理成功的项目记进历史 ──
+        let success_count = done_paths.len();
 
-        let entry = HistoryEntry {
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            source_paths: file_paths.clone(),
-            target_dir: target_dir.clone(),
-            mode: mode.clone(),
-            file_names,
-            item_count: file_paths.len(),
-        };
-        save_history(&app_handle, entry);
+        if success_count > 0 {
+            let entry = HistoryEntry {
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                source_paths: done_paths,
+                target_dir: target_dir.clone(),
+                mode: mode.clone(),
+                file_names: done_names,
+                item_count: success_count,
+            };
+            save_history(&app_handle, entry);
+        }
 
         let _ = app_handle.emit(
             "task-progress",
@@ -600,10 +821,14 @@ fn do_move_files(
                 percent: None,
                 current: None,
                 error: None,
-                count: Some(file_paths.len()),
+                warning: if warnings.is_empty() {
+                    None
+                } else {
+                    Some(format_warning_summary(&warnings))
+                },
+                count: Some(success_count),
             },
         );
-        running.store(false, Ordering::SeqCst);
     }
 }
 
@@ -617,8 +842,13 @@ async fn load_config(app_handle: tauri::AppHandle) -> Result<Config, String> {
     let config_file = config_dir.join("MinagiData").join("config.json");
 
     let config = if config_file.exists() {
-        let content = fs::read_to_string(&config_file).map_err(|e| e.to_string())?;
-        serde_json::from_str(&content).map_err(|e| e.to_string())?
+        // 桃华加固：读不出来或者坏了都别让界面空着，先找最新一份能读的快照
+        fs::read_to_string(&config_file)
+            .ok()
+            .and_then(|content| serde_json::from_str::<Config>(&content).ok())
+            .unwrap_or_else(|| {
+                latest_valid_config(&config_dir.join("MinagiData")).unwrap_or_default()
+            })
     } else {
         Config::default()
     };
@@ -635,25 +865,44 @@ async fn load_config(app_handle: tauri::AppHandle) -> Result<Config, String> {
 
 #[tauri::command]
 async fn save_config(app_handle: tauri::AppHandle, config: Config, do_snapshot: Option<bool>) -> Result<(), String> {
+    let snapshot = do_snapshot.unwrap_or(false);
+
+    // 桃华修复：存配置会顺手创建快照、复制图片，都是阻塞 IO，
+    // 不能占着 async 运行时，交给阻塞线程池
+    tauri::async_runtime::spawn_blocking(move || {
+        save_config_blocking(&app_handle, config, snapshot)
+    })
+    .await
+    .map_err(|e| format!("保存任务异常退出: {}", e))?
+}
+
+fn save_config_blocking(
+    app_handle: &tauri::AppHandle,
+    config: Config,
+    do_snapshot: bool,
+) -> Result<(), String> {
     let config_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
     let data_dir = config_dir.join("MinagiData");
     fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
 
     let config_file = data_dir.join("config.json");
     let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    fs::write(&config_file, json).map_err(|e| e.to_string())?;
+    write_atomic(&config_file, &json).map_err(|e| e.to_string())?;
 
     // 更新缓存
     if let Some(state) = app_handle.try_state::<ConfigState>() {
         if let Ok(mut cached) = state.0.lock() {
-            *cached = config;
+            *cached = config.clone();
         }
     }
 
     // 区域名/路径/背景图变更时创建快照
-    if do_snapshot.unwrap_or(false) {
+    if do_snapshot {
         create_snapshot(&data_dir);
     }
+
+    // 桃华补充：顺手清掉已经没人引用的旧背景图
+    cleanup_orphan_images(&data_dir, &config);
 
     Ok(())
 }
@@ -708,6 +957,13 @@ async fn cancel_move(app_handle: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn read_history_file(path: &Path) -> Vec<HistoryEntry> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default()
+}
+
 /// 保存历史记录到磁盘（最多 50 条）
 fn save_history(app_handle: &tauri::AppHandle, entry: HistoryEntry) {
     let Ok(config_dir) = app_handle.path().app_data_dir() else {
@@ -717,16 +973,15 @@ fn save_history(app_handle: &tauri::AppHandle, entry: HistoryEntry) {
     let history_file = data_dir.join("history.json");
     let _ = fs::create_dir_all(&data_dir);
 
-    // 读现有记录 → 加新记录 → 截断到 50 条 → 写回
-    let mut history: Vec<HistoryEntry> = if history_file.exists() {
-        fs::read_to_string(&history_file)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    } else {
-        Vec::new()
+    // 桃华修复：读-改-写整段加锁，避免和「清空」互相覆盖
+    let Some(lock) = app_handle.try_state::<HistoryFileLock>() else {
+        return;
+    };
+    let Ok(_guard) = lock.0.lock() else {
+        return;
     };
 
+    let mut history = read_history_file(&history_file);
     history.push(entry);
     if history.len() > 50 {
         history = history.split_off(history.len() - 50); // 保留最后 50 条
@@ -739,36 +994,59 @@ fn save_history(app_handle: &tauri::AppHandle, entry: HistoryEntry) {
         }
     }
 
-    let _ = fs::write(&history_file, serde_json::to_string_pretty(&history).unwrap_or_default());
+    // 桃华修复：原子替换，半截 JSON 不会把整份历史写坏
+    let _ = write_atomic(&history_file, &serde_json::to_string_pretty(&history).unwrap_or_default());
 }
 
 #[tauri::command]
 async fn load_history(app_handle: tauri::AppHandle) -> Result<Vec<HistoryEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || load_history_blocking(&app_handle))
+        .await
+        .map_err(|e| format!("读取历史任务异常退出: {}", e))?
+}
+
+fn load_history_blocking(app_handle: &tauri::AppHandle) -> Result<Vec<HistoryEntry>, String> {
     let config_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
     let history_file = config_dir.join("MinagiData").join("history.json");
 
-    if history_file.exists() {
-        let content = fs::read_to_string(&history_file).map_err(|e| e.to_string())?;
-        let history: Vec<HistoryEntry> =
-            serde_json::from_str(&content).map_err(|e| e.to_string())?;
-        // 更新缓存
-        if let Some(state) = app_handle.try_state::<HistoryState>() {
-            if let Ok(mut cached) = state.0.lock() {
-                *cached = history.clone();
-            }
-        }
-        Ok(history)
-    } else {
-        Ok(Vec::new())
+    if !history_file.exists() {
+        return Ok(Vec::new());
     }
+
+    let content = fs::read_to_string(&history_file).map_err(|e| e.to_string())?;
+    let history: Vec<HistoryEntry> =
+        serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+    // 更新缓存
+    if let Some(state) = app_handle.try_state::<HistoryState>() {
+        if let Ok(mut cached) = state.0.lock() {
+            *cached = history.clone();
+        }
+    }
+
+    Ok(history)
 }
 
 #[tauri::command]
 async fn clear_history(app_handle: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || clear_history_blocking(&app_handle))
+        .await
+        .map_err(|e| format!("清空历史任务异常退出: {}", e))?
+}
+
+fn clear_history_blocking(app_handle: &tauri::AppHandle) -> Result<(), String> {
     let config_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
     let data_dir = config_dir.join("MinagiData");
     fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-    fs::write(data_dir.join("history.json"), "[]").map_err(|e| e.to_string())?;
+    let history_file = data_dir.join("history.json");
+
+    // 和 save_history 用同一把锁
+    let lock = app_handle
+        .try_state::<HistoryFileLock>()
+        .ok_or_else(|| "历史记录锁没有初始化".to_string())?;
+    let _guard = lock.0.lock().map_err(|_| "历史记录锁坏了".to_string())?;
+
+    write_atomic(&history_file, "[]").map_err(|e| e.to_string())?;
 
     if let Some(state) = app_handle.try_state::<HistoryState>() {
         if let Ok(mut cached) = state.0.lock() {
@@ -791,6 +1069,12 @@ struct SnapshotInfo {
 
 #[tauri::command]
 async fn list_snapshots(app_handle: tauri::AppHandle) -> Result<Vec<SnapshotInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_snapshots_blocking(&app_handle))
+        .await
+        .map_err(|e| format!("读取快照列表任务异常退出: {}", e))?
+}
+
+fn list_snapshots_blocking(app_handle: &tauri::AppHandle) -> Result<Vec<SnapshotInfo>, String> {
     let config_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
     let snapshots_dir = config_dir.join("MinagiData").join(SNAPSHOTS_DIR);
 
@@ -848,14 +1132,32 @@ async fn restore_snapshot(
     app_handle: tauri::AppHandle,
     snapshot_name: String,
 ) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        restore_snapshot_blocking(&app_handle, &snapshot_name)
+    })
+    .await
+    .map_err(|e| format!("恢复任务异常退出: {}", e))?
+}
+
+fn restore_snapshot_blocking(
+    app_handle: &tauri::AppHandle,
+    snapshot_name: &str,
+) -> Result<(), String> {
     // 桃华加固：快照名只能是纯数字，挡住 ../ 这类路径穿越
     if snapshot_name.is_empty() || !snapshot_name.bytes().all(|b| b.is_ascii_digit()) {
         return Err("快照名称不合法".into());
     }
 
+    // 桃华加固：同一时间只允许一个恢复任务，双击也不会互相删目录
+    let restore_state = app_handle.state::<RestoreState>();
+    let _restore_guard = restore_state
+        .0
+        .try_lock()
+        .map_err(|_| "正在恢复上一份快照，等一下……".to_string())?;
+
     let config_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
     let data_dir = config_dir.join("MinagiData");
-    let snap_dir = data_dir.join(SNAPSHOTS_DIR).join(&snapshot_name);
+    let snap_dir = data_dir.join(SNAPSHOTS_DIR).join(snapshot_name);
 
     if !snap_dir.exists() {
         return Err("快照不存在呢……".into());
@@ -870,17 +1172,53 @@ async fn restore_snapshot(
     let content = fs::read_to_string(&snap_config).map_err(|e| e.to_string())?;
     serde_json::from_str::<Config>(&content).map_err(|e| format!("快照配置损坏: {}", e))?;
 
-    // 复制 config.json 到工作目录
-    fs::write(data_dir.join("config.json"), &content).map_err(|e| e.to_string())?;
-
-    // 复制 images 到工作目录
+    // 桃华修复：先把快照图片复制到临时目录。
+    // 这一步要放在 create_snapshot 之前——新快照可能把最旧的那份挤掉，
+    // 要恢复的恰好是它的话，后面就找不到图片了
     let snap_images = snap_dir.join("images");
+    let images_dir = data_dir.join("images");
+    let staging = data_dir.join("images.restore");
+    let _ = fs::remove_dir_all(&staging);
+
     if snap_images.exists() {
-        let images_dir = data_dir.join("images");
-        let _ = fs::remove_dir_all(&images_dir);
-        let _ = fs::create_dir_all(&images_dir);
-        copy_dir_content(&snap_images, &images_dir);
+        fs::create_dir_all(&staging).map_err(|e| format!("无法创建临时目录: {}", e))?;
+        copy_dir_content(&snap_images, &staging)
+            .map_err(|e| format!("复制快照图片失败: {}", e))?;
     }
+
+    // 桃华修复：恢复前先给当前状态存一份，出问题还能退回来
+    create_snapshot(&data_dir);
+
+    // 图片目录先换，config 最后写。任何一步失败都尽量还原
+    let backup = data_dir.join("images.before-restore");
+    let _ = fs::remove_dir_all(&backup);
+
+    let had_images = images_dir.exists();
+    if had_images {
+        fs::rename(&images_dir, &backup)
+            .map_err(|e| format!("无法备份当前图片: {}", e))?;
+    }
+
+    if snap_images.exists() {
+        if let Err(e) = fs::rename(&staging, &images_dir) {
+            if had_images {
+                let _ = fs::rename(&backup, &images_dir);
+            }
+            return Err(format!("无法替换图片目录: {}", e));
+        }
+    }
+
+    if let Err(e) = write_atomic(&data_dir.join("config.json"), &content) {
+        // 配置没写成功，把图片换回去
+        let _ = fs::remove_dir_all(&images_dir);
+        if had_images {
+            let _ = fs::rename(&backup, &images_dir);
+        }
+        return Err(format!("无法写入配置: {}", e));
+    }
+
+    let _ = fs::remove_dir_all(&backup);
+    let _ = fs::remove_dir_all(&staging);
 
     // 更新内存缓存
     if let Some(state) = app_handle.try_state::<ConfigState>() {
@@ -932,6 +1270,13 @@ async fn import_image(
 
     if file_data_b64.is_empty() {
         return Ok(String::new());
+    }
+
+    // 桃华修复：先按 base64 长度估一下，明显超限就别解码了。
+    // 以前先解码再检查，超大字符串会先占满一块内存
+    const MAX_B64_BYTES: usize = (MAX_IMAGE_BYTES / 3 + 1) * 4;
+    if file_data_b64.len() > MAX_B64_BYTES {
+        return Err("图片太大了，换一张 10MB 以内的吧".into());
     }
 
     let bytes = base64::engine::general_purpose::STANDARD
@@ -1027,6 +1372,213 @@ async fn open_external(url: String) -> Result<(), String> {
 }
 
 // ═══════════════════════════════════════════════════
+// 桃华定制：旧版配置迁移
+// 全程用 serde_json::Value 操作，不反序列化成 Config 再写回，
+// 这样旧配置里不认识的字段不会在迁移时悄悄丢掉
+// ═══════════════════════════════════════════════════
+
+fn migrate_legacy_config(config_file: &Path, images_dir: &Path, data_dir: &Path) {
+    let Ok(content) = fs::read_to_string(config_file) else {
+        return;
+    };
+    let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+    let Some(obj) = root.as_object_mut() else {
+        return;
+    };
+
+    let mut changed = false;
+
+    // ── 第一步：旧字段名 bg / backgroundImage / bgImage → globalBg / bg ──
+    let has_global_bg = obj
+        .get("globalBg")
+        .and_then(|value| value.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+
+    if !has_global_bg {
+        for old_key in ["bg", "backgroundImage", "bgImage"] {
+            let Some(value) = obj.remove(old_key) else {
+                continue;
+            };
+            if value.as_str().map(|s| !s.is_empty()).unwrap_or(false) {
+                obj.insert("globalBg".to_string(), value);
+                changed = true;
+                break;
+            }
+        }
+    }
+
+    if let Some(zones) = obj.get_mut("zones").and_then(|value| value.as_array_mut()) {
+        for zone in zones {
+            let Some(zone_obj) = zone.as_object_mut() else {
+                continue;
+            };
+            let has_bg = zone_obj
+                .get("bg")
+                .and_then(|value| value.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
+            if has_bg {
+                continue;
+            }
+            let Some(value) = zone_obj.remove("backgroundImage") else {
+                continue;
+            };
+            if value.as_str().map(|s| !s.is_empty()).unwrap_or(false) {
+                zone_obj.insert("bg".to_string(), value);
+                changed = true;
+            }
+        }
+    }
+
+    // ── 第二步：修复背景图路径 ──
+    if let Some(value) = obj.get_mut("globalBg") {
+        changed |= repair_bg_value(value, images_dir, data_dir);
+    }
+    if let Some(zones) = obj.get_mut("zones").and_then(|value| value.as_array_mut()) {
+        for zone in zones {
+            if let Some(value) = zone.get_mut("bg") {
+                changed |= repair_bg_value(value, images_dir, data_dir);
+            }
+        }
+    }
+
+    if changed {
+        if let Ok(json) = serde_json::to_string_pretty(&root) {
+            let _ = write_atomic(config_file, &json);
+        }
+    }
+}
+
+/// 把一条背景图配置修到「界面真的能加载」的状态
+/// data URL → 存成文件；路径失效 → 在 images 里找同名文件；
+/// 文件在 asset scope 外 → 复制进 images
+fn repair_bg_value(
+    value: &mut serde_json::Value,
+    images_dir: &Path,
+    data_dir: &Path,
+) -> bool {
+    let Some(raw) = value.as_str().map(str::to_string) else {
+        return false;
+    };
+    if raw.is_empty() {
+        return false;
+    }
+
+    if raw.starts_with("data:") {
+        if let Some(saved) = save_data_url_image(&raw, images_dir) {
+            *value = serde_json::Value::String(saved);
+            return true;
+        }
+        return false;
+    }
+
+    let path = Path::new(&raw);
+
+    if !path.exists() {
+        if let Some(name) = path.file_name() {
+            let candidate = images_dir.join(name);
+            if candidate.exists() {
+                *value = serde_json::Value::String(to_asset_path(&candidate));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 文件存在，但不在 asset scope 里的话界面加载不出来，复制进来
+    if is_inside_data_dir(path, data_dir) {
+        return false;
+    }
+    if let Some(saved) = copy_image_into(&raw, images_dir) {
+        *value = serde_json::Value::String(saved);
+        return true;
+    }
+
+    false
+}
+
+fn to_asset_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn is_inside_data_dir(path: &Path, data_dir: &Path) -> bool {
+    let Ok(dir) = fs::canonicalize(data_dir) else {
+        return true;
+    };
+    let Ok(file) = fs::canonicalize(path) else {
+        return true;
+    };
+    file.starts_with(dir)
+}
+
+fn save_data_url_image(raw: &str, images_dir: &Path) -> Option<String> {
+    use base64::Engine;
+
+    let (meta, payload) = raw.strip_prefix("data:")?.split_once(',')?;
+    if !meta.contains(";base64") {
+        return None;
+    }
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .ok()?;
+    let ext = detect_image_extension(&bytes)?;
+
+    fs::create_dir_all(images_dir).ok()?;
+
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let dest = get_unique_path(&images_dir.join(format!("img_migrated_{}.{}", millis, ext)));
+    fs::write(&dest, bytes).ok()?;
+
+    Some(to_asset_path(&dest))
+}
+
+fn copy_image_into(source: &str, images_dir: &Path) -> Option<String> {
+    let source_path = Path::new(source);
+    let name = source_path.file_name()?;
+
+    fs::create_dir_all(images_dir).ok()?;
+
+    let dest = get_unique_path(&images_dir.join(name));
+    fs::copy(source_path, &dest).ok()?;
+
+    Some(to_asset_path(&dest))
+}
+
+/// 桃华补充：小屏幕 / 150% 缩放下 780×550 可能比可用区域还高，
+/// 启动时按显示器尺寸收一收，别让底下的区域被切掉
+fn fit_window_to_screen(app: &tauri::App) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(Some(monitor)) = window.current_monitor() else {
+        return;
+    };
+
+    let scale = monitor.scale_factor();
+    let logical_width = monitor.size().width as f64 / scale;
+    let logical_height = monitor.size().height as f64 / scale;
+
+    // 给任务栏和窗口留白留一点空间
+    let max_width = (logical_width - 40.0).max(640.0);
+    let max_height = (logical_height - 90.0).max(420.0);
+
+    let width = 780.0_f64.min(max_width);
+    let height = 550.0_f64.min(max_height);
+
+    if width < 780.0 || height < 550.0 {
+        let _ = window.set_size(tauri::LogicalSize::new(width, height));
+        let _ = window.center();
+    }
+}
+
+// ═══════════════════════════════════════════════════
 // 应用入口
 // ═══════════════════════════════════════════════════
 
@@ -1045,8 +1597,10 @@ pub fn run() {
         }))
         .manage(CancelState(Arc::new(AtomicBool::new(false))))
         .manage(TaskState(Arc::new(AtomicBool::new(false))))
+        .manage(RestoreState(Mutex::new(())))
         .manage(ConfigState(Mutex::new(default_config)))
         .manage(HistoryState(Mutex::new(Vec::new())))
+        .manage(HistoryFileLock(Mutex::new(())))
         .invoke_handler(tauri::generate_handler![
             load_config,
             save_config,
@@ -1088,7 +1642,7 @@ pub fn run() {
                             obj.insert("bgOpacity".to_string(), serde_json::json!(0.40));
                         }
                         if let Ok(json) = serde_json::to_string_pretty(&root) {
-                            let _ = fs::write(&cfg_path, json);
+                            let _ = write_atomic(&cfg_path, &json);
                         }
                     }
                 }
@@ -1097,107 +1651,15 @@ pub fn run() {
             }
 
             // 桃华定制：验证并修复背景图路径 + 迁移旧版配置
-            // 如果 config.json 中的背景图片文件不存在，尝试从本地 images 目录中查找并修复为正确的当前绝对路径
-            // 同时也处理旧版可能的 data URL 存储方式
+            // 桃华修复：整段交给 migrate_legacy_config，全程操作 Value，
+            // 不再反序列化成 Config 再写回，旧字段不会丢
             let config_file = data_dir.join("config.json");
             if config_file.exists() {
-                let content = fs::read_to_string(&config_file).unwrap_or_default();
-                let mut config_modified = false;
-
-                // 第一步：检查旧版配置中是否有替代字段名，迁移到新版字段
-                if let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(obj) = root.as_object_mut() {
-                        // 如果 globalBg 为空或不存在，检查旧版可能的字段名
-                        let has_global_bg = obj.get("globalBg")
-                            .and_then(|v| v.as_str())
-                            .map(|s| !s.is_empty())
-                            .unwrap_or(false);
-
-                        if !has_global_bg {
-                            // 尝试旧版可能的字段名：bg（顶层）、backgroundImage、bgImage
-                            for old_key in &["bg", "backgroundImage", "bgImage"] {
-                                if let Some(val) = obj.remove(*old_key) {
-                                    if let Some(s) = val.as_str() {
-                                        if !s.is_empty() {
-                                            obj.insert("globalBg".to_string(), val);
-                                            config_modified = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // 检查区域里是否有旧版字段名（如 backgroundImage 代替 bg）
-                        if let Some(zones) = obj.get_mut("zones") {
-                            if let Some(zones_arr) = zones.as_array_mut() {
-                                for zone in zones_arr {
-                                    if let Some(z_obj) = zone.as_object_mut() {
-                                        let has_bg = z_obj.get("bg")
-                                            .and_then(|v| v.as_str())
-                                            .map(|s| !s.is_empty())
-                                            .unwrap_or(false);
-                                        if !has_bg {
-                                            if let Some(val) = z_obj.remove("backgroundImage") {
-                                                if let Some(s) = val.as_str() {
-                                                    if !s.is_empty() {
-                                                        z_obj.insert("bg".to_string(), val);
-                                                        config_modified = true;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if config_modified {
-                        if let Ok(json) = serde_json::to_string_pretty(&root) {
-                            let _ = fs::write(&config_file, json);
-                        }
-                    }
-                }
-
-                // 第二步：修复图片路径（重新读取已修复的配置）
-                let content = fs::read_to_string(&config_file).unwrap_or_default();
-                if let Ok(mut cfg) = serde_json::from_str::<Config>(&content) {
-                    let mut changed = false;
-
-                    // 修复全局背景图路径
-                    let bg = cfg.global_bg.clone();
-                    if !bg.is_empty() && !Path::new(&bg).exists() {
-                        // 尝试从文件名找
-                        if let Some(filename) = Path::new(&bg).file_name() {
-                            let new_path = images_dir.join(filename);
-                            if new_path.exists() {
-                                cfg.global_bg = new_path.to_string_lossy().replace('\\', "/");
-                                changed = true;
-                            }
-                        }
-                    }
-
-                    // 修复每个区域的背景图路径
-                    for zone in &mut cfg.zones {
-                        let zone_bg = zone.bg.clone();
-                        if !zone_bg.is_empty() && !Path::new(&zone_bg).exists() {
-                            if let Some(filename) = Path::new(&zone_bg).file_name() {
-                                let new_path = images_dir.join(filename);
-                                if new_path.exists() {
-                                    zone.bg = new_path.to_string_lossy().replace('\\', "/");
-                                    changed = true;
-                                }
-                            }
-                        }
-                    }
-
-                    if changed {
-                        if let Ok(json) = serde_json::to_string_pretty(&cfg) {
-                            let _ = fs::write(&config_file, json);
-                        }
-                    }
-                }
+                migrate_legacy_config(&config_file, &images_dir, &data_dir);
             }
+
+            // 桃华补充：小屏幕 / 高缩放下先把窗口收进可用区域
+            fit_window_to_screen(app);
 
             // 桃华定制：保存安装路径到标记文件，供未来安装器恢复使用
             if let Ok(exe_path) = std::env::current_exe() {
@@ -1224,42 +1686,51 @@ pub fn run() {
             // Windows 11 任务栏角溢出设置靠 GUID 匹配图标偏好
             // 随机 GUID 会让每次启动时 Windows 忘记用户的"显示"设置
             // 用固定的 id 能让 Tauri 生成稳定的 GUID
-            let _tray = TrayIconBuilder::with_id("minagi-file-classifier")
-                .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("Minagi 文件分类助手")
-                .menu(&tray_menu)
-                .on_menu_event(|app, event| {
-                    match event.id().as_ref() {
-                        "open" => {
+            //
+            // 桃华修复：以前 default_window_icon().unwrap()，图标缺失直接 panic，
+            // 连主窗口都起不来。现在没有图标就跳过托盘，创建失败也只记录
+            let tray_result = app.default_window_icon().cloned().map(|icon| {
+                TrayIconBuilder::with_id("minagi-file-classifier")
+                    .icon(icon)
+                    .tooltip("Minagi 文件分类助手")
+                    .menu(&tray_menu)
+                    .on_menu_event(|app, event| {
+                        match event.id().as_ref() {
+                            "open" => {
+                                if let Some(window) = app.get_webview_window("main") {
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
+                            }
+                            "quit" => {
+                                app.exit(0);
+                            }
+                            _ => {}
+                        }
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        // 左键单击托盘图标 → 显示并聚焦窗口
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            let app = tray.app_handle();
                             if let Some(window) = app.get_webview_window("main") {
                                 let _ = window.show();
                                 let _ = window.set_focus();
+                                // 通知前端重置 hover 状态（WebView2 恢复窗口时 :hover 会粘住）
+                                let _ = app.emit("window-restored", ());
                             }
                         }
-                        "quit" => {
-                            app.exit(0);
-                        }
-                        _ => {}
-                    }
-                })
-                .on_tray_icon_event(|tray, event| {
-                    // 左键单击托盘图标 → 显示并聚焦窗口
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                            // 通知前端重置 hover 状态（WebView2 恢复窗口时 :hover 会粘住）
-                            let _ = app.emit("window-restored", ());
-                        }
-                    }
-                })
-                .build(app)?;
+                    })
+                    .build(app)
+            });
+
+            if let Some(Err(e)) = tray_result {
+                eprintln!("托盘图标创建失败：{}", e);
+            }
 
             // ── 窗口事件：关闭拦截 + 原生拖放 ─────
             if let Some(window) = app.get_webview_window("main") {
@@ -1337,4 +1808,140 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("启动失败……桃华检查一下配置？");
+}
+
+// ─── 测试 ─────────────────────────────────────────
+// 这几个保护逻辑一旦写错就是磁盘/配置出事故，桃华想先钉住它们
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "minagi-test-{}-{}-{}",
+            label,
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn target_inside_source_is_rejected() {
+        let root = scratch_dir("inside");
+        let source = root.join("Downloads");
+        let nested = source.join("分类");
+        let sibling = root.join("Pictures");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&sibling).unwrap();
+
+        assert!(target_is_inside(&source, &nested));
+        assert!(target_is_inside(&source, &source));
+        assert!(!target_is_inside(&source, &sibling));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_atomic_replaces_file_without_leftovers() {
+        let root = scratch_dir("atomic");
+        let file = root.join("config.json");
+
+        write_atomic(&file, r#"{"opacity":0.5}"#).unwrap();
+        write_atomic(&file, r#"{"opacity":0.8}"#).unwrap();
+
+        let content = fs::read_to_string(&file).unwrap();
+        assert!(content.contains("0.8"));
+
+        let files = fs::read_dir(&root).unwrap().flatten().count();
+        assert_eq!(files, 1, "临时文件改名后不该留下");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn latest_valid_config_skips_broken_snapshots() {
+        let root = scratch_dir("fallback");
+        let snapshots = root.join(SNAPSHOTS_DIR);
+
+        for (name, body) in [("100", r#"{"opacity":0.4}"#), ("200", "{ broken")] {
+            let dir = snapshots.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("config.json"), body).unwrap();
+        }
+
+        let config = latest_valid_config(&root).expect("应该回退到能读的快照");
+        assert!((config.opacity - 0.4).abs() < f64::EPSILON);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn warning_summary_caps_long_lists() {
+        let warnings: Vec<String> = (0..5).map(|i| format!("第 {} 个失败", i)).collect();
+        let summary = format_warning_summary(&warnings);
+        assert!(summary.contains("还有 2 个没成功"));
+    }
+
+    #[test]
+    fn migration_keeps_unknown_fields() {
+        let root = scratch_dir("migrate");
+        let images = root.join("images");
+        fs::create_dir_all(&images).unwrap();
+
+        let config_file = root.join("config.json");
+        let legacy = r#"{
+            "opacity": 0.8,
+            "bg": "C:/old/picture.png",
+            "customField": { "keep": 42 },
+            "zones": []
+        }"#;
+        fs::write(&config_file, legacy).unwrap();
+
+        migrate_legacy_config(&config_file, &images, &root);
+
+        let text = fs::read_to_string(&config_file).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+        assert_eq!(saved["globalBg"], "C:/old/picture.png");
+        assert_eq!(saved["customField"]["keep"], 42, "不认识的字段不能在迁移时丢掉");
+        assert!(saved.get("bg").is_none(), "旧字段迁移后应该被移除");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn orphan_images_are_cleaned_but_referenced_ones_stay() {
+        let root = scratch_dir("images");
+        let images = root.join("images");
+        fs::create_dir_all(&images).unwrap();
+        for name in ["now.jpg", "snapshot.jpg", "orphan.jpg"] {
+            fs::write(images.join(name), b"x").unwrap();
+        }
+
+        let snapshot_dir = root.join(SNAPSHOTS_DIR).join("100");
+        fs::create_dir_all(&snapshot_dir).unwrap();
+        let mut snapshot = Config::default();
+        snapshot.global_bg = to_asset_path(&images.join("snapshot.jpg"));
+        fs::write(
+            snapshot_dir.join("config.json"),
+            serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
+
+        let mut current = Config::default();
+        current.global_bg = to_asset_path(&images.join("now.jpg"));
+        cleanup_orphan_images(&root, &current);
+
+        assert!(images.join("now.jpg").exists());
+        assert!(images.join("snapshot.jpg").exists(), "快照里引用的图不能被删");
+        assert!(!images.join("orphan.jpg").exists(), "没人引用的图应该被清掉");
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }

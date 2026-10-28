@@ -230,6 +230,9 @@ btnCancel.addEventListener('click', () => {
 window.sorterAPI.onProgress((data) => {
     console.log('[progress]', data.status, data.percent ?? '', data.current ?? '', '/', data.total ?? '');
     if (data.status === 'start') {
+        // 桃华修复：上一批的隐藏定时器可能还没跑完，先清掉，
+        // 不然它会把这一批的进度条藏起来
+        clearTimeout(state.timers.progressHide);
         state.isBusy = true;
         if (dragSpacer) dragSpacer.style.display = 'none';
         btnCancel.style.display = '';
@@ -245,17 +248,27 @@ window.sorterAPI.onProgress((data) => {
         state.isBusy = false;
         btnCancel.style.display = 'none';
         dom.progressFill.style.width = '100%';
-        dom.progressText.textContent = '✨ 完成啦！';
         if (state.config.chimeEnabled) playChime();
-        if (data.count) {
-            const verb = state.isCutMode ? '移动' : '复制';
-            showToast(`✅ 成功${verb}了 ${data.count} 个项目`);
+
+        const count = data.count || 0;
+        // 桃华修复：有项目没成功时只说完成了几个，不再报「全部成功」
+        if (data.warning) {
+            dom.progressText.textContent = '⚠️ 完成了，但有项目没成功';
+            showToast(`⚠️ 完成 ${count} 个，${data.warning}`, 6000);
+        } else {
+            dom.progressText.textContent = '✨ 完成啦！';
+            if (count) {
+                const verb = state.isCutMode ? '移动' : '复制';
+                showToast(`✅ 成功${verb}了 ${count} 个项目`);
+            }
         }
-        setTimeout(() => {
+
+        state.timers.progressHide = setTimeout(() => {
             dom.progressWrap.style.display = 'none';
             if (dragSpacer) dragSpacer.style.display = '';
-        }, 1800);
+        }, data.warning ? 4000 : 1800);
     } else if (data.status === 'cancelled') {
+        clearTimeout(state.timers.progressHide);
         state.isBusy = false;
         dom.progressWrap.style.display = 'none';
         if (dragSpacer) dragSpacer.style.display = '';
@@ -264,6 +277,7 @@ window.sorterAPI.onProgress((data) => {
         // 桃华补充：剪切时源文件删不掉，但复制已经成功了
         showToast(`⚠️ ${data.error}`, 4000);
     } else if (data.status === 'error') {
+        clearTimeout(state.timers.progressHide);
         state.isBusy = false;
         dom.progressWrap.style.display = 'none';
         if (dragSpacer) dragSpacer.style.display = '';
@@ -311,25 +325,48 @@ listen('window-hiding', () => {
 // 所以监听挂在 body 上，再限定只认窗口留白和顶栏
 document.body.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
-    if (e.target.closest('button, input, .mode-switch, .header-right, [data-tauri-drag-region]')) return;
+    // 桃华修复：进度条也在顶栏里，以前拖它会把窗口拖走
+    if (e.target.closest('button, input, .mode-switch, .header-right, .progress-bar-wrap, [data-tauri-drag-region]')) return;
     if (e.target !== document.body && !e.target.closest('.header')) return;
     void getCurrentWindow().startDragging();
 });
 
 // ─── 模式切换 ──────────────────────────────────────
-dom.modeSwitch.addEventListener('click', () => {
-    state.isCutMode = !state.isCutMode;
+// 桃华修复：点「复制」「剪切」两个标签直接选模式，点当前已激活的那个
+// 不会再反着切；另外补上键盘操作（Tab 聚焦 + 空格/回车）
+function setCutMode(cut) {
+    const changed = state.isCutMode !== cut;
+    state.isCutMode = cut;
 
-    if (state.isCutMode) {
-        dom.modeTrack.className = 'track cut';
-        dom.labelCut.classList.add('cut-active');
-        dom.labelCopy.classList.remove('copy-active');
-        showToast('✂️ 已切换到剪切模式');
-    } else {
-        dom.modeTrack.className = 'track copy';
-        dom.labelCopy.classList.add('copy-active');
-        dom.labelCut.classList.remove('cut-active');
-        showToast('📋 已切换到复制模式');
+    dom.modeSwitch.setAttribute('aria-checked', String(cut));
+    dom.modeTrack.className = cut ? 'track cut' : 'track copy';
+    dom.labelCut.classList.toggle('cut-active', cut);
+    dom.labelCopy.classList.toggle('copy-active', !cut);
+
+    if (changed) {
+        showToast(cut ? '✂️ 已切换到剪切模式' : '📋 已切换到复制模式');
+    }
+}
+
+dom.modeSwitch.addEventListener('click', (e) => {
+    if (e.target.closest('.label')) return;   // 标签有自己的处理
+    setCutMode(!state.isCutMode);
+});
+
+dom.labelCopy.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setCutMode(false);
+});
+
+dom.labelCut.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setCutMode(true);
+});
+
+dom.modeSwitch.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') {
+        e.preventDefault();
+        setCutMode(!state.isCutMode);
     }
 });
 
@@ -352,6 +389,9 @@ function renderZoneCard(zone, i) {
     card.innerHTML = `
         <div class="drop-zone ${zone.bg ? 'has-bg' : ''}"
              id="drop-${i}"
+             role="button"
+             tabindex="0"
+             aria-label="区域 ${i + 1} 拖放区，双击或按回车打开目标文件夹"
              style="">
             <div class="title" id="title-${i}">${escapeHTML(zone.name)}</div>
         </div>
@@ -359,8 +399,10 @@ function renderZoneCard(zone, i) {
             <input type="text"
                    id="path-input-${i}"
                    value="${escapeHTML(zone.path)}"
-                   placeholder="拖入文件后保存到……">
-            <button class="save-btn saved" id="save-btn-${i}">✓</button>
+                   placeholder="拖入文件后保存到……"
+                   aria-label="区域 ${i + 1} 的目标路径">
+            <button class="save-btn saved" id="save-btn-${i}"
+                    aria-label="保存区域 ${i + 1} 的目标路径">✓</button>
         </div>
     `;
 
@@ -381,13 +423,17 @@ function renderZoneConfigCard(zone, i) {
                class="zone-name-input"
                value="${escapeHTML(zone.name)}"
                placeholder="名称"
-               title="修改区域名称">
+               title="修改区域名称"
+               aria-label="区域 ${i + 1} 的名称">
         <div class="zone-btns">
             <label class="zone-btn" title="更换区域背景图片">
                 🖼️
-                <input type="file" id="zone-bg-${i}" accept="image/*" hidden>
+                <input type="file" id="zone-bg-${i}" accept="image/*" hidden
+                       aria-label="为区域 ${i + 1} 选择背景图片">
             </label>
-            <button class="zone-btn zone-btn--del" id="zone-bg-reset-${i}" title="移除区域背景图片">✕</button>
+            <button class="zone-btn zone-btn--del" id="zone-bg-reset-${i}"
+                    title="移除区域背景图片"
+                    aria-label="移除区域 ${i + 1} 的背景图片">✕</button>
         </div>
     `;
 
@@ -408,12 +454,22 @@ function bindZoneEvents(i) {
     const pathInput = document.getElementById(`path-input-${i}`);
     const saveBtn   = document.getElementById(`save-btn-${i}`);
 
-    // 双击打开文件夹
-    dropZone.addEventListener('dblclick', () => {
+    const openZoneFolder = () => {
         if (zone.path) {
             window.sorterAPI.openFolder(zone.path).catch(err => {
                 showToast(`❌ ${err}`);
             });
+        }
+    };
+
+    // 双击打开文件夹
+    dropZone.addEventListener('dblclick', openZoneFolder);
+
+    // 桃华补充：键盘也能打开（Enter / 空格）
+    dropZone.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            openZoneFolder();
         }
     });
 
@@ -530,13 +586,41 @@ function detectTitleBrightness() {
 
         img.onload = () => {
             try {
+                if (!img.naturalWidth || !img.naturalHeight) {
+                    resolve('light-bg');
+                    return;
+                }
+
+                // 桃华修复：背景是 cover 居中显示的，标题实际盖在图片的哪一块
+                // 要按绘制后的缩放和偏移换算，不能再固定采左上角 40×40
+                const viewW = window.innerWidth;
+                const viewH = window.innerHeight;
+
+                const scale = Math.max(viewW / img.naturalWidth, viewH / img.naturalHeight);
+                const drawnW = img.naturalWidth * scale;
+                const drawnH = img.naturalHeight * scale;
+                const offsetX = (viewW - drawnW) / 2;
+                const offsetY = (viewH - drawnH) / 2;
+
+                // 顶栏左侧标题大致占的区域（CSS 像素）
+                const rect = {
+                    x: 16,
+                    y: 16,
+                    width: Math.min(320, viewW * 0.4),
+                    height: 36,
+                };
+
+                const sx = Math.max(0, Math.min(img.naturalWidth - 1, (rect.x - offsetX) / scale));
+                const sy = Math.max(0, Math.min(img.naturalHeight - 1, (rect.y - offsetY) / scale));
+                const sw = Math.max(1, Math.min(img.naturalWidth - sx, rect.width / scale));
+                const sh = Math.max(1, Math.min(img.naturalHeight - sy, rect.height / scale));
+
                 const canvas = document.createElement('canvas');
                 const size = 40;
                 canvas.width = size;
                 canvas.height = size;
                 const ctx = canvas.getContext('2d');
-                // 采样左上角（标题所在区域）
-                ctx.drawImage(img, 0, 0, size, size, 0, 0, size, size);
+                ctx.drawImage(img, sx, sy, sw, sh, 0, 0, size, size);
 
                 const data = ctx.getImageData(0, 0, size, size).data;
                 let totalLum = 0, count = 0;
@@ -585,12 +669,29 @@ async function updateTitleContrast() {
 
 // ─── 全局设置事件 ──────────────────────────────────
 
+// 桃华修复：拖动透明度滑块时每个 input 都 invoke 一次后端，
+// 几十次/秒的 IPC 太浪费。合并到下一帧，一帧最多发一次
+let opacityFrame = null;
+let pendingOpacity = null;
+
+function setWindowOpacity(value) {
+    pendingOpacity = value;
+    if (opacityFrame !== null) return;
+
+    opacityFrame = requestAnimationFrame(() => {
+        opacityFrame = null;
+        if (pendingOpacity !== null) {
+            window.sorterAPI.setOpacity(pendingOpacity).catch(() => {});
+        }
+    });
+}
+
 // 透明度滑块
 dom.sliderOpacity.addEventListener('input', (e) => {
     const val = parseFloat(e.target.value);
     state.config.opacity = val;
     document.documentElement.style.setProperty('--glass-opacity', val);
-    window.sorterAPI.setOpacity(val);
+    setWindowOpacity(val);
     dom.opacityValue.textContent = Math.round(val * 100) + '%';
     debounce('opacity', persistConfig, 300);
 });
@@ -681,27 +782,41 @@ btnResetTheme.addEventListener('click', () => {
 });
 
 // ─── 托盘开关 ──────────────────────────────────────
+// 桃华修复：开关改成整行 <button role="switch">，点文字也能切换，
+// Tab 聚焦后按空格/回车同样有效
 const toggleMinimizeTray = document.getElementById('toggle-minimize-tray');
 const toggleCloseTray = document.getElementById('toggle-close-tray');
 const toggleChime = document.getElementById('toggle-chime');
 
-toggleMinimizeTray.addEventListener('click', () => {
-    state.config.minimizeToTray = !state.config.minimizeToTray;
-    toggleMinimizeTray.classList.toggle('toggle--on', state.config.minimizeToTray);
-    persistConfig();
-});
+function setToggleState(button, on) {
+    if (!button) return;
+    button.setAttribute('aria-checked', String(on));
+    const track = button.querySelector('.toggle');
+    if (track) track.classList.toggle('toggle--on', on);
+}
 
-toggleCloseTray.addEventListener('click', () => {
-    state.config.closeToTray = !state.config.closeToTray;
-    toggleCloseTray.classList.toggle('toggle--on', state.config.closeToTray);
-    persistConfig();
-});
+function bindToggle(button, getValue, setValue) {
+    if (!button) return;
 
-toggleChime.addEventListener('click', () => {
-    state.config.chimeEnabled = !state.config.chimeEnabled;
-    toggleChime.classList.toggle('toggle--on', state.config.chimeEnabled);
-    persistConfig();
-});
+    button.addEventListener('click', () => {
+        const next = !getValue();
+        setValue(next);
+        setToggleState(button, next);
+        persistConfig();
+    });
+}
+
+bindToggle(toggleMinimizeTray,
+    () => state.config.minimizeToTray,
+    (value) => { state.config.minimizeToTray = value; });
+
+bindToggle(toggleCloseTray,
+    () => state.config.closeToTray,
+    (value) => { state.config.closeToTray = value; });
+
+bindToggle(toggleChime,
+    () => state.config.chimeEnabled,
+    (value) => { state.config.chimeEnabled = value; });
 
 // ─── 模态框 ────────────────────────────────────────
 dom.btnSettings.addEventListener('click', () => {
@@ -795,10 +910,11 @@ dom.snapshotSelect.addEventListener('change', () => {
     const snap = snapshotList.find(s => s.name === name);
     if (snap) {
         dom.btnRestoreSnap.disabled = false;
-        const sizeKB = (snap.configSize / 1024).toFixed(1);
+        // 桃华修复：后端序列化出来的是 snake_case，这里以前读的驼峰永远拿不到
+        const sizeKB = ((snap.config_size ?? 0) / 1024).toFixed(1);
         dom.snapshotInfo.textContent =
             formatSnapshotLabel(snap.timestamp)
-            + ' · ' + snap.imageCount + ' 张背景图 · ' + sizeKB + ' KB';
+            + ' · ' + (snap.image_count ?? 0) + ' 张背景图 · ' + sizeKB + ' KB';
     }
 });
 
@@ -813,7 +929,7 @@ function applyCurrentConfig() {
     const bgOpacity = config.bgOpacity ?? 1;
 
     root.setProperty('--glass-opacity', config.opacity);
-    window.sorterAPI.setOpacity(config.opacity);
+    setWindowOpacity(config.opacity);
     dom.sliderOpacity.value = config.opacity;
     dom.opacityValue.textContent = Math.round(config.opacity * 100) + '%';
 
@@ -827,9 +943,9 @@ function applyCurrentConfig() {
     inputThemeColor.value = config.themeColor || '#e87890';
     applyThemeColor(config.themeColor || '#e87890');
 
-    toggleMinimizeTray.classList.toggle('toggle--on', config.minimizeToTray);
-    toggleCloseTray.classList.toggle('toggle--on', config.closeToTray);
-    toggleChime.classList.toggle('toggle--on', config.chimeEnabled);
+    setToggleState(toggleMinimizeTray, config.minimizeToTray);
+    setToggleState(toggleCloseTray, config.closeToTray);
+    setToggleState(toggleChime, config.chimeEnabled);
 
     renderAllZones();
     updateTitleContrast();
@@ -838,7 +954,12 @@ function applyCurrentConfig() {
 
 dom.btnRestoreSnap.addEventListener('click', async () => {
     const name = dom.snapshotSelect.value;
-    if (!name) return;
+    if (!name || dom.btnRestoreSnap.disabled) return;
+
+    // 桃华修复：恢复期间锁住按钮，连点不会并发删/拷 images
+    const originalLabel = dom.btnRestoreSnap.textContent;
+    dom.btnRestoreSnap.disabled = true;
+    dom.btnRestoreSnap.textContent = '恢复中…';
 
     try {
         await window.sorterAPI.restoreSnapshot(name);
@@ -849,6 +970,10 @@ dom.btnRestoreSnap.addEventListener('click', async () => {
         ));
     } catch (err) {
         showToast('❌ 恢复失败：' + err);
+    } finally {
+        dom.btnRestoreSnap.textContent = originalLabel;
+        // 恢复前会先把当前状态存一份，列表要跟着更新
+        refreshSnapshotList();
     }
 });
 

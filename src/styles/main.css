@@ -24,7 +24,9 @@
     --surface:      rgba(255, 255, 255, var(--glass-opacity));
     --surface-high: rgba(255, 255, 255, 0.75);
     --text:         #3a3335;
-    --text-dim:     #9a8f92;
+    /* 桃华修复：原来 #9a8f92 在白色卡片上只有 3:1 左右，
+       11px 小字达不到 AA 的 4.5:1，整体压深一档 */
+    --text-dim:     #756a6d;
     --border:       rgba(255, 255, 255, var(--glass-opacity));
 
     /* 形状 */
@@ -71,6 +73,12 @@ body::before {
     padding: 0;
     user-select: none;
     -webkit-user-select: none;
+}
+
+/* 桃华修复：全局禁选把路径输入框也一起禁了，里面的字选不中、复制不了 */
+input, textarea {
+    user-select: text;
+    -webkit-user-select: text;
 }
 
 body {
@@ -216,10 +224,17 @@ body {
     user-select: none;
 }
 
+.mode-switch:focus-visible {
+    outline: 2px solid var(--pink);
+    outline-offset: 3px;
+    border-radius: 10px;
+}
+
 .mode-switch .label {
     font-size: 12px;
     font-weight: 500;
     color: var(--text-dim);
+    cursor: pointer;
     transition: color 0.3s;
 }
 .mode-switch .label.copy-active { color: var(--copy); }
@@ -363,7 +378,7 @@ body {
 .drop-zone .title {
     font-size: 19px;
     font-weight: 500;
-    color: #8a8280;
+    color: var(--text-dim);
     z-index: 2;
     text-align: center;
     padding: 0 14px;
@@ -454,12 +469,17 @@ body {
     align-items: center;
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.25s ease;
+    /* 桃华修复：只靠 opacity:0，关掉的弹窗里的按钮还能被 Tab 聚焦，
+       空格也能触发隐藏功能。visibility:hidden 会把整棵树移出焦点顺序 */
+    visibility: hidden;
+    transition: opacity 0.25s ease, visibility 0s linear 0.25s;
 }
 
 .modal-overlay.show {
     opacity: 1;
     pointer-events: auto;
+    visibility: visible;
+    transition: opacity 0.25s ease;
 }
 
 /* 桃华重做：窗口本身不留内边距，边缘交给标题栏和内容区，
@@ -510,6 +530,10 @@ body {
     cursor: pointer;
     width: 26px;
     height: 26px;
+    border: none;
+    background: transparent;
+    padding: 0;
+    font-family: inherit;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -538,6 +562,13 @@ body {
     background: rgba(60, 40, 35, 0.045);
 }
 .set-btn.modal-clear:hover {
+    background: var(--danger-ghost);
+    color: var(--danger);
+}
+
+/* 桃华修复：确认清空时 .set-btn.modal-clear 的权重压过了 .set-btn--danger，
+   背景一直是灰的，只有文字变红。这里把确认态完整接回来 */
+.set-btn.modal-clear.set-btn--danger {
     background: var(--danger-ghost);
     color: var(--danger);
 }
@@ -858,12 +889,22 @@ body {
 
 /* ─── 设置开关行 ─────────────────────────────── */
 .set-toggle-row {
+    width: 100%;
     display: flex;
     align-items: center;
     padding: 8px 0;
+    border: none;
+    background: transparent;
+    font-family: inherit;
     font-size: 12px;
     color: var(--text);
+    text-align: left;
     cursor: pointer;
+}
+.set-toggle-row:focus-visible {
+    outline: 2px solid var(--pink);
+    outline-offset: 2px;
+    border-radius: 8px;
 }
 .set-toggle-row + .set-toggle-row {
     border-top: 1px solid rgba(0,0,0,0.04);
