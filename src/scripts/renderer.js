@@ -8,8 +8,9 @@
 // 桃华把 Electron 的 preload 桥换成了 Tauri 的 invoke ✨
 // window.__TAURI__ 在 withGlobalTauri: true 时由 Tauri 注入
 
-const { invoke } = window.__TAURI__.core;
+const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+const { getCurrentWindow } = window.__TAURI__.window;
 
 window.sorterAPI = {
     loadConfig:   ()           => invoke('load_config'),
@@ -23,14 +24,11 @@ window.sorterAPI = {
                                  }),
     cancelMove:   ()           => invoke('cancel_move'),
     openFolder:   (targetPath) => invoke('open_folder', { path: targetPath }),
-    importImage:       (fileName, fileDataB64) => invoke('import_image', { fileName, fileDataB64 }),
-    readImageDataUrl:  (path)       => invoke('read_image_data_url', { path }),
+    importImage:       (fileDataB64) => invoke('import_image', { fileDataB64 }),
     loadHistory:       ()           => invoke('load_history'),
     clearHistory:      ()           => invoke('clear_history'),
     winMinimize:       ()           => invoke('win_minimize'),
-    winMaximize:  ()           => invoke('win_maximize'),
     winClose:     ()           => invoke('win_close'),
-    winMove:      (delta)      => invoke('win_move', { dx: delta.dx, dy: delta.dy }),
     setOpacity:   (val)        => invoke('set_opacity', { opacity: val }),
     openExternal: (url)        => invoke('open_external', { url }),
     onProgress:   (callback)   => { listen('task-progress', (event) => callback(event.payload)); },
@@ -39,16 +37,6 @@ window.sorterAPI = {
 // ─── Tauri 图片路径转换 ─────────────────────────
 // WebView2 不允许直接加载 file:// URL
 // 需要用 convertFileSrc 转成 Tauri asset 协议
-/** 用 FileReader 读取文件为 data URL */
-function readFileAsDataUrl(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(file);
-    });
-}
-
 /**
  * 压缩图片以避免通过 WebView2 IPC 传输过大的 base64
  * WebView2 的 postMessage 对大消息（>1MB）可能挂起
@@ -72,52 +60,27 @@ async function compressImageForIpc(file, maxDim = 1920, quality = 0.8) {
     return canvas.toDataURL('image/jpeg', quality);
 }
 
-/** 通过 Tauri 命令读取图片为 base64 data URL */
-async function toAssetUrl(filePath) {
+/**
+ * 本地图片路径 → WebView 能直接加载的 asset URL
+ * 桃华改造：以前是把整张图读成 base64 塞进 IPC，六张背景图启动时
+ * 又要编码又要传又要解码，越大的图越慢。现在交给 asset 协议，
+ * 浏览器自己流式读取，还能用上 WebView 的缓存
+ */
+function toAssetUrl(filePath) {
     if (!filePath) return '';
     try {
-        const result = await window.sorterAPI.readImageDataUrl(filePath);
-        return result || '';
+        return convertFileSrc(filePath);
     } catch (_) {
         return '';
     }
 }
 
-/**
- * 如果 data URL 对应的图片太大，用 canvas 压缩后再返回
- * 这样即使磁盘上是 1.81MB 的原图，传给 CSS 之前也会压缩到适合显示的大小 ✨
- */
-async function compressDataUrl(dataUrl, maxDim = 1920, quality = 0.8) {
-    try {
-        const img = new Image();
-        await new Promise((resolve, reject) => {
-            img.onload = resolve;
-            img.onerror = reject;
-            img.src = dataUrl;
-        });
-        let w = img.width, h = img.height;
-        if (w > maxDim || h > maxDim) {
-            const scale = maxDim / Math.max(w, h);
-            w = Math.round(w * scale);
-            h = Math.round(h * scale);
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, w, h);
-        return canvas.toDataURL('image/jpeg', quality);
-    } catch {
-        return dataUrl;
-    }
-}
-
-/** 加载区域背景图（异步） */
-async function loadZoneBg(i, filePath) {
-    const dataUrl = await toAssetUrl(filePath);
+/** 加载区域背景图 */
+function loadZoneBg(i, filePath) {
+    const assetUrl = toAssetUrl(filePath);
     const dropZone = document.getElementById(`drop-${i}`);
-    if (dropZone && dataUrl) {
-        dropZone.style.backgroundImage = `url('${dataUrl}')`;
+    if (dropZone && assetUrl) {
+        dropZone.style.backgroundImage = `url('${assetUrl}')`;
     }
 }
 
@@ -190,17 +153,30 @@ function darkenColor(hex, pct) {
 }
 
 function applyThemeColor(hex) {
+    const num = parseInt(hex.slice(1), 16);
+    const r = (num >> 16) & 0xff;
+    const g = (num >> 8) & 0xff;
+    const b = num & 0xff;
     const root = document.documentElement.style;
     root.setProperty('--pink', hex);
     root.setProperty('--pink-hover', darkenColor(hex, 0.12));
     // 主题色浅色版（用于拖放区背景等）
     root.setProperty('--pink-light', hex + '14');
+    // 桃华补充：光晕、阴影这些半透明颜色也跟着主题走
+    root.setProperty('--pink-rgb', `${r}, ${g}, ${b}`);
 }
 
-/** 播放完成提示音 */
+/** 播放完成提示音
+ *  桃华修复：共用同一个 AudioContext。以前每次播放都新建一个，Chromium 的
+ *  AudioContext 数量有上限，用一阵子之后就再也发不出声音了 */
+let chimeContext = null;
+
 function playChime() {
     try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        chimeContext ??= new (window.AudioContext || window.webkitAudioContext)();
+        if (chimeContext.state === 'suspended') void chimeContext.resume();
+        const ctx = chimeContext;
+
         [880, 1100, 1320].forEach((freq, i) => {
             const osc = ctx.createOscillator();
             const gain = ctx.createGain();
@@ -215,7 +191,7 @@ function playChime() {
     } catch (_) {}
 }
 
-function showToast(msg) {
+function showToast(msg, duration = 2000) {
     dom.toast.textContent = msg;
     dom.toast.style.opacity = '1';
     // 强制触发重绘（WebView2 需要）
@@ -223,7 +199,7 @@ function showToast(msg) {
     clearTimeout(state.timers.toast);
     state.timers.toast = setTimeout(() => {
         dom.toast.style.opacity = '0';
-    }, 2000);
+    }, duration);
 }
 
 function validateImageFile(file) {
@@ -284,6 +260,9 @@ window.sorterAPI.onProgress((data) => {
         dom.progressWrap.style.display = 'none';
         if (dragSpacer) dragSpacer.style.display = '';
         showToast('🚫 操作已取消');
+    } else if (data.status === 'warning') {
+        // 桃华补充：剪切时源文件删不掉，但复制已经成功了
+        showToast(`⚠️ ${data.error}`, 4000);
     } else if (data.status === 'error') {
         state.isBusy = false;
         dom.progressWrap.style.display = 'none';
@@ -324,34 +303,17 @@ listen('window-hiding', () => {
     });
 });
 
-// ─── JS 窗口拖拽（Tauri 版） ────────────────────────
-{
-    let dragging = false;
-    let startX = 0, startY = 0;
+// ─── 窗口拖拽 ──────────────────────────────────────
+// 桃华修复：交给系统原生拖拽（startDragging）
+// 以前每次 mousemove 都 invoke 一次 win_move，又慢又容易漂
+// 标题和空白区已经有 data-tauri-drag-region，这里补上顶栏剩下的空白
+const headerEl = document.querySelector('.header');
 
-    document.body.addEventListener('mousedown', (e) => {
-        // 不拖拽按钮、输入框、拖放区、设置面板
-        if (e.target.closest('button, input, .mode-switch, .win-controls, .header-right, .drop-zone, .card, .modal-overlay')) return;
-        dragging = true;
-        startX = e.screenX;
-        startY = e.screenY;
-    });
-
-    window.addEventListener('mousemove', (e) => {
-        if (!dragging) return;
-        const dx = e.screenX - startX;
-        const dy = e.screenY - startY;
-        if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-            window.sorterAPI.winMove({ dx, dy });
-            startX = e.screenX;
-            startY = e.screenY;
-        }
-    });
-
-    window.addEventListener('mouseup', () => {
-        dragging = false;
-    });
-}
+headerEl.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest('button, input, .mode-switch, .header-right, [data-tauri-drag-region]')) return;
+    void getCurrentWindow().startDragging();
+});
 
 // ─── 模式切换 ──────────────────────────────────────
 dom.modeSwitch.addEventListener('click', () => {
@@ -444,7 +406,6 @@ function bindZoneEvents(i) {
     const dropZone  = document.getElementById(`drop-${i}`);
     const pathInput = document.getElementById(`path-input-${i}`);
     const saveBtn   = document.getElementById(`save-btn-${i}`);
-    const titleEl   = document.getElementById(`title-${i}`);
 
     // 双击打开文件夹
     dropZone.addEventListener('dblclick', () => {
@@ -519,13 +480,12 @@ function bindZoneConfigEvents(i) {
 
         try {
             // 压缩图片以避免 WebView2 IPC 大消息挂起
-            const dataUrl = await compressImageForIpc(file);
-            const base64 = dataUrl.split(',')[1];
-            const saved = await window.sorterAPI.importImage(file.name, base64);
+            const base64 = (await compressImageForIpc(file)).split(',')[1];
+            const saved = await window.sorterAPI.importImage(base64);
             if (!saved) return;
             zone.bg = saved;
             if (dropZone) {
-                dropZone.style.backgroundImage = `url('${dataUrl}')`;
+                dropZone.style.backgroundImage = `url('${toAssetUrl(saved)}')`;
                 dropZone.classList.add('has-bg');
             }
             resetBtn.disabled = false;
@@ -564,26 +524,33 @@ function detectTitleBrightness() {
 
         const url = bgImage.replace(/url\(['"]?/g, '').replace(/['"]?\)/g, '');
         const img = new Image();
+        // 桃华注：asset 协议是跨源请求，要带 anonymous 才能读画布像素
+        img.crossOrigin = 'anonymous';
 
         img.onload = () => {
-            const canvas = document.createElement('canvas');
-            const size = 40;
-            canvas.width = size;
-            canvas.height = size;
-            const ctx = canvas.getContext('2d');
-            // 采样左上角（标题所在区域）
-            ctx.drawImage(img, 0, 0, size, size, 0, 0, size, size);
+            try {
+                const canvas = document.createElement('canvas');
+                const size = 40;
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                // 采样左上角（标题所在区域）
+                ctx.drawImage(img, 0, 0, size, size, 0, 0, size, size);
 
-            const data = ctx.getImageData(0, 0, size, size).data;
-            let totalLum = 0, count = 0;
-            for (let i = 0; i < data.length; i += 16) {
-                const r = data[i], g = data[i + 1], b = data[i + 2];
-                // 感知亮度公式
-                totalLum += 0.299 * r + 0.587 * g + 0.114 * b;
-                count++;
+                const data = ctx.getImageData(0, 0, size, size).data;
+                let totalLum = 0, count = 0;
+                for (let i = 0; i < data.length; i += 16) {
+                    const r = data[i], g = data[i + 1], b = data[i + 2];
+                    // 感知亮度公式
+                    totalLum += 0.299 * r + 0.587 * g + 0.114 * b;
+                    count++;
+                }
+                const avgLum = totalLum / count;
+                resolve(avgLum > 128 ? 'light-bg' : 'dark-bg');
+            } catch {
+                // 画布被污染之类的情况，按浅色背景处理就好
+                resolve('light-bg');
             }
-            const avgLum = totalLum / count;
-            resolve(avgLum > 128 ? 'light-bg' : 'dark-bg');
         };
 
         img.onerror = () => resolve('light-bg');
@@ -653,12 +620,11 @@ dom.inputGlobalBg.addEventListener('change', async (e) => {
 
     try {
         // 压缩图片以避免 WebView2 IPC 大消息挂起（>1MB 的 base64 会卡死）
-        const dataUrl = await compressImageForIpc(file);
-        const base64 = dataUrl.split(',')[1];
-        const saved = await window.sorterAPI.importImage(file.name, base64);
+        const base64 = (await compressImageForIpc(file)).split(',')[1];
+        const saved = await window.sorterAPI.importImage(base64);
         if (!saved) return;
         state.config.globalBg = saved;
-        document.documentElement.style.setProperty('--bg-image', `url('${dataUrl}')`);
+        document.documentElement.style.setProperty('--bg-image', `url('${toAssetUrl(saved)}')`);
         updateTitleContrast();
         updateBgStatus();
         await persistConfig();
@@ -778,7 +744,11 @@ document.addEventListener('keydown', (e) => {
 });
 
 // 禁用右键菜单（防止 Save As / Refresh 等干扰）
-document.addEventListener('contextmenu', (e) => e.preventDefault());
+// 桃华补充：输入框里要留右键，不然 Minagi 想粘贴路径都做不到
+document.addEventListener('contextmenu', (e) => {
+    if (e.target.closest('input, textarea')) return;
+    e.preventDefault();
+});
 
 // 桃华定制：快照管理 ────────────────────────────────
 
@@ -831,30 +801,34 @@ dom.snapshotSelect.addEventListener('change', () => {
     }
 });
 
-async function applyCurrentConfig() {
-    // 重新应用全部 UI 设置（从 state.config）
-    document.documentElement.style.setProperty('--glass-opacity', state.config.opacity);
-    window.sorterAPI.setOpacity(state.config.opacity);
-    dom.sliderOpacity.value = state.config.opacity;
-    dom.opacityValue.textContent = Math.round(state.config.opacity * 100) + '%';
+/**
+ * 把 state.config 整份应用到界面
+ * 桃华整理：启动和恢复快照都要走这里，以前两边各写了一份，
+ * 改了一处忘了另一处，恢复完快照界面还不完全同步
+ */
+function applyCurrentConfig() {
+    const config  = state.config;
+    const root    = document.documentElement.style;
+    const bgOpacity = config.bgOpacity ?? 1;
 
-    document.documentElement.style.setProperty('--bg-opacity', state.config.bgOpacity ?? 1);
-    dom.sliderBgOpacity.value = state.config.bgOpacity ?? 1;
-    dom.bgOpacityValue.textContent = Math.round((state.config.bgOpacity ?? 1) * 100) + '%';
+    root.setProperty('--glass-opacity', config.opacity);
+    window.sorterAPI.setOpacity(config.opacity);
+    dom.sliderOpacity.value = config.opacity;
+    dom.opacityValue.textContent = Math.round(config.opacity * 100) + '%';
 
-    if (state.config.globalBg) {
-        const dataUrl = await toAssetUrl(state.config.globalBg);
-        document.documentElement.style.setProperty('--bg-image', dataUrl ? `url('${dataUrl}')` : 'none');
-    } else {
-        document.documentElement.style.setProperty('--bg-image', 'none');
-    }
+    root.setProperty('--bg-opacity', bgOpacity);
+    dom.sliderBgOpacity.value = bgOpacity;
+    dom.bgOpacityValue.textContent = Math.round(bgOpacity * 100) + '%';
 
-    inputThemeColor.value = state.config.themeColor || '#e87890';
-    applyThemeColor(state.config.themeColor || '#e87890');
+    const bgUrl = toAssetUrl(config.globalBg);
+    root.setProperty('--bg-image', bgUrl ? `url('${bgUrl}')` : 'none');
 
-    toggleMinimizeTray.classList.toggle('toggle--on', state.config.minimizeToTray);
-    toggleCloseTray.classList.toggle('toggle--on', state.config.closeToTray);
-    toggleChime.classList.toggle('toggle--on', state.config.chimeEnabled);
+    inputThemeColor.value = config.themeColor || '#e87890';
+    applyThemeColor(config.themeColor || '#e87890');
+
+    toggleMinimizeTray.classList.toggle('toggle--on', config.minimizeToTray);
+    toggleCloseTray.classList.toggle('toggle--on', config.closeToTray);
+    toggleChime.classList.toggle('toggle--on', config.chimeEnabled);
 
     renderAllZones();
     updateTitleContrast();
@@ -868,7 +842,7 @@ dom.btnRestoreSnap.addEventListener('click', async () => {
     try {
         await window.sorterAPI.restoreSnapshot(name);
         state.config = await window.sorterAPI.loadConfig();
-        await applyCurrentConfig();
+        applyCurrentConfig();
         showToast('✅ 已恢复到 ' + formatSnapshotLabel(
             snapshotList.find(s => s.name === name)?.timestamp || 0
         ));
@@ -886,43 +860,13 @@ async function persistConfig(createSnapshot = false) {
 // ─── 初始化 ────────────────────────────────────────
 async function init() {
     state.config = await window.sorterAPI.loadConfig();
-
-    // 应用全局设置
-    document.documentElement.style.setProperty('--glass-opacity', state.config.opacity);
-    window.sorterAPI.setOpacity(state.config.opacity);
-    dom.sliderOpacity.value = state.config.opacity;
-    dom.opacityValue.textContent = Math.round(state.config.opacity * 100) + '%';
-
-    document.documentElement.style.setProperty('--bg-opacity', state.config.bgOpacity ?? 1);
-    dom.sliderBgOpacity.value = state.config.bgOpacity ?? 1;
-    dom.bgOpacityValue.textContent = Math.round((state.config.bgOpacity ?? 1) * 100) + '%';
-
-    if (state.config.globalBg) {
-        const dataUrl = await toAssetUrl(state.config.globalBg);
-        if (dataUrl) {
-            const compressed = dataUrl.length > 500 * 1024 ? await compressDataUrl(dataUrl) : dataUrl;
-            document.documentElement.style.setProperty('--bg-image', `url('${compressed}')`);
-        }
-    }
-
-    renderAllZones();
-    updateTitleContrast();
-    updateBgStatus();
-
-    toggleMinimizeTray.classList.toggle('toggle--on', state.config.minimizeToTray);
-    toggleCloseTray.classList.toggle('toggle--on', state.config.closeToTray);
-    toggleChime.classList.toggle('toggle--on', state.config.chimeEnabled);
-
-    inputThemeColor.value = state.config.themeColor || '#e87890';
-    applyThemeColor(state.config.themeColor || '#e87890');
+    applyCurrentConfig();
 }
 
 // ─── Tauri 原生拖放事件 ─────────────────────────
 // WebView2 的 DataTransfer 没有 file.path（那是 Electron 专有 API）
 // 这里监听 Rust 端发射的原生拖放事件，拿到真实文件路径
 {
-    const { listen } = window.__TAURI__.event;
-
     let dragActiveZone = null;
 
     listen('tauri-drag-enter', (event) => {

@@ -212,10 +212,39 @@ fn count_bytes_bulk(paths: &[String]) -> u64 {
     paths.iter().map(|p| count_bytes(Path::new(p))).sum()
 }
 
+/// 删除文件或目录
+/// 桃华注：Windows 上删文件和删目录是两个 API，不能靠「两个都试一遍」碰运气
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    let meta = fs::symlink_metadata(path)?;
+    if meta.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
 // ═══════════════════════════════════════════════════
 // 桃华定制：配置快照机制
-// 每次用户改区域名/路径/背景图时自动存档，最多保留 10 份
+// 每次用户改区域名/路径/背景图时自动存档，最多保留 MAX_SNAPSHOTS 份
 // ═══════════════════════════════════════════════════
+
+/// 快照目录名就是 Unix 秒数，不是纯数字的旧目录一律不认
+fn snapshot_seconds(path: &Path) -> Option<u64> {
+    path.file_name()?.to_str()?.parse().ok()
+}
+
+/// 找出最新的一份快照
+fn latest_snapshot(snapshots_dir: &Path) -> Option<PathBuf> {
+    let entries = fs::read_dir(snapshots_dir).ok()?;
+
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter_map(|path| snapshot_seconds(&path).map(|ts| (ts, path)))
+        .max_by_key(|(ts, _)| *ts)
+        .map(|(_, path)| path)
+}
 
 /// 创建一份配置快照（config.json + 当前所有背景图片）
 /// 目录名为 Unix 时间戳，前端用 JS Date 格式化为本地时间
@@ -224,23 +253,34 @@ fn create_snapshot(data_dir: &Path) {
     let images_dir = data_dir.join("images");
     let snapshots_dir = data_dir.join(SNAPSHOTS_DIR);
 
-    if !config_file.exists() {
+    let Ok(current_config) = fs::read_to_string(&config_file) else {
         return;
+    };
+
+    // 桃华补充：配置没变就不重新存档，不然同一份配置能把所有位置都占满
+    if let Some(latest) = latest_snapshot(&snapshots_dir) {
+        let unchanged = fs::read_to_string(latest.join("config.json"))
+            .map(|previous| previous == current_config)
+            .unwrap_or(false);
+        if unchanged {
+            return;
+        }
     }
 
-    let ts = std::time::SystemTime::now()
+    // 同一秒内保存多次时往后顺延，保证目录名唯一（名字必须是数字）
+    let mut ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
-    let snap_name = ts.to_string();
-    let snap_dir = snapshots_dir.join(&snap_name);
-    if snap_dir.exists() {
-        return;
+    let mut snap_dir = snapshots_dir.join(ts.to_string());
+    while snap_dir.exists() {
+        ts += 1;
+        snap_dir = snapshots_dir.join(ts.to_string());
     }
 
     let _ = fs::create_dir_all(&snap_dir);
-    let _ = fs::copy(&config_file, snap_dir.join("config.json"));
+    let _ = fs::write(snap_dir.join("config.json"), &current_config);
 
     if images_dir.exists() {
         let snap_images = snap_dir.join("images");
@@ -271,92 +311,22 @@ fn copy_dir_content(src: &Path, dst: &Path) {
 
 /// 保留最近 MAX_SNAPSHOTS 份，删除更旧的
 fn cleanup_snapshots(snapshots_dir: &Path) {
-    if !snapshots_dir.exists() {
+    let Ok(entries) = fs::read_dir(snapshots_dir) else {
         return;
-    }
+    };
 
-    let mut dirs: Vec<PathBuf> = fs::read_dir(snapshots_dir)
-        .into_iter()
+    let mut snapshots: Vec<PathBuf> = entries
         .flatten()
-        .flatten()
-        .filter(|e| {
-            e.file_type().map(|t| t.is_dir()).unwrap_or(false)
-                && e.file_name().to_string_lossy().parse::<u64>().is_ok()
-        })
-        .map(|e| e.path())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && snapshot_seconds(path).is_some())
         .collect();
 
-    // 按时间戳数字大小降序
-    dirs.sort_by(|a, b| {
-        let ta = a.file_name().and_then(|n| n.to_str()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        let tb = b.file_name().and_then(|n| n.to_str()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        tb.cmp(&ta)
-    });
+    // 新的排前面，超出的部分删掉
+    snapshots.sort_by_key(|path| std::cmp::Reverse(snapshot_seconds(path).unwrap_or(0)));
 
-    for old in dirs.iter().skip(MAX_SNAPSHOTS) {
+    for old in snapshots.iter().skip(MAX_SNAPSHOTS) {
         let _ = fs::remove_dir_all(old);
     }
-}
-
-/// 启动时尝试从最新快照自动恢复 config.json
-/// 返回 true 表示已恢复
-fn try_auto_recover(data_dir: &Path) -> bool {
-    let config_file = data_dir.join("config.json");
-    let snapshots_dir = data_dir.join(SNAPSHOTS_DIR);
-
-    // config.json 正常就不需要恢复
-    if config_file.exists() {
-        if let Ok(content) = fs::read_to_string(&config_file) {
-            if serde_json::from_str::<Config>(&content).is_ok() {
-                return false;
-            }
-        }
-    }
-
-    // 从快照恢复
-    if !snapshots_dir.exists() {
-        return false;
-    }
-
-    let mut dirs: Vec<PathBuf> = fs::read_dir(&snapshots_dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| {
-            e.file_type().map(|t| t.is_dir()).unwrap_or(false)
-                && e.file_name().to_string_lossy().parse::<u64>().is_ok()
-        })
-        .map(|e| e.path())
-        .collect();
-
-    dirs.sort_by(|a, b| {
-        let ta = a.file_name().and_then(|n| n.to_str()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        let tb = b.file_name().and_then(|n| n.to_str()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        tb.cmp(&ta)
-    });
-
-    for snap in &dirs {
-        let snap_config = snap.join("config.json");
-        if snap_config.exists() {
-            if let Ok(content) = fs::read_to_string(&snap_config) {
-                if serde_json::from_str::<Config>(&content).is_ok() {
-                    // 恢复 config.json
-                    let _ = fs::write(&config_file, &content);
-                    // 恢复图片
-                    let snap_images = snap.join("images");
-                    if snap_images.exists() {
-                        let images_dir = data_dir.join("images");
-                        let _ = fs::remove_dir_all(&images_dir);
-                        let _ = fs::create_dir_all(&images_dir);
-                        copy_dir_content(&snap_images, &images_dir);
-                    }
-                    return true;
-                }
-            }
-        }
-    }
-
-    false
 }
 
 // ─── 文件拷贝（带进度 + 取消支持） ─────────────────
@@ -442,7 +412,8 @@ fn copy_folder_recursive(
 // ─── 文件移动/复制核心逻辑 ─────────────────────
 
 /// 在后台执行文件移动/复制，通过事件系统推送进度
-async fn do_move_files(
+/// 桃华注：这里是同步阻塞 IO，调用方负责把它放到阻塞线程池里
+fn do_move_files(
     app_handle: tauri::AppHandle,
     file_paths: Vec<String>,
     target_dir: String,
@@ -536,6 +507,10 @@ async fn do_move_files(
             if let Err(e) =
                 copy_folder_recursive(source, &dest_path, &mut on_bytes, &cancelled)
             {
+                // 桃华修复：取消或失败时把目标位置的半截文件清掉
+                // 以前取消之后目标文件夹里会留一堆不完整的东西
+                let _ = remove_path(&dest_path);
+
                 if e == "cancelled" {
                     break;
                 }
@@ -556,8 +531,24 @@ async fn do_move_files(
 
             // 剪切模式下拷贝完成后删除源文件
             if mode == "cut" && !cancelled.load(Ordering::Relaxed) {
-                let _ = fs::remove_dir_all(source);
-                let _ = fs::remove_file(source); // 单个文件也尝试
+                // 桃华修复：删除失败要告诉用户，不能让人以为剪切成功
+                if let Err(e) = remove_path(source) {
+                    let _ = app_handle.emit(
+                        "task-progress",
+                        ProgressPayload {
+                            status: "warning".into(),
+                            total: None,
+                            percent: None,
+                            current: None,
+                            error: Some(format!(
+                                "「{}」已复制，但源文件删除失败：{}",
+                                base_name.to_string_lossy(),
+                                e
+                            )),
+                            count: None,
+                        },
+                    );
+                }
             }
         }
     }
@@ -701,9 +692,10 @@ async fn move_files(
     };
 
     // 后台执行，不阻塞前端
+    // 桃华修复：拷贝是同步阻塞 IO，放到阻塞线程池，别占着 async 运行时
     let handle = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        do_move_files(handle, file_paths, target_dir, mode, cancel_flag, running).await;
+    tauri::async_runtime::spawn_blocking(move || {
+        do_move_files(handle, file_paths, target_dir, mode, cancel_flag, running);
     });
 
     Ok(())
@@ -856,6 +848,11 @@ async fn restore_snapshot(
     app_handle: tauri::AppHandle,
     snapshot_name: String,
 ) -> Result<(), String> {
+    // 桃华加固：快照名只能是纯数字，挡住 ../ 这类路径穿越
+    if snapshot_name.is_empty() || !snapshot_name.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("快照名称不合法".into());
+    }
+
     let config_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
     let data_dir = config_dir.join("MinagiData");
     let snap_dir = data_dir.join(SNAPSHOTS_DIR).join(&snapshot_name);
@@ -906,10 +903,28 @@ async fn open_folder(path: String) -> Result<(), String> {
     }
 }
 
+/// 根据文件头判断图片格式
+/// 桃华修复：以前按原文件名取扩展名，前端压缩后明明是 JPEG，
+/// 却会存成 .png，文件内容和后缀对不上
+fn detect_image_extension(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("jpg")
+    } else if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("png")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("gif")
+    } else if bytes.len() > 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        Some("webp")
+    } else if bytes.starts_with(b"BM") {
+        Some("bmp")
+    } else {
+        None
+    }
+}
+
 #[tauri::command]
 async fn import_image(
     app_handle: tauri::AppHandle,
-    file_name: String,
     file_data_b64: String,
 ) -> Result<String, String> {
     use base64::Engine;
@@ -927,30 +942,18 @@ async fn import_image(
         return Err("图片太大了，换一张 10MB 以内的吧".into());
     }
 
-    // 从文件名中提取扩展名
-    let ext = Path::new(&file_name)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("jpg");
-
-    let ext_lc = ext.to_lowercase();
-    let ext = match ext_lc.as_str() {
-        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" => ext_lc.as_str(),
-        _ => return Err("只支持常见图片格式".into()),
-    };
+    let ext = detect_image_extension(&bytes).ok_or("只支持常见图片格式")?;
 
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let suffix = (timestamp % 99999) as u32;
-    let new_name = format!("img_{}_{}.{}", timestamp, suffix, ext);
 
     let config_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
     let images_dir = config_dir.join("MinagiData").join("images");
     fs::create_dir_all(&images_dir).map_err(|e| e.to_string())?;
 
-    let dest = images_dir.join(&new_name);
+    let dest = get_unique_path(&images_dir.join(format!("img_{}.{}", timestamp, ext)));
     fs::write(&dest, &bytes).map_err(|e| format!("无法保存图片: {}", e))?;
 
     Ok(dest.to_string_lossy().replace('\\', "/"))
@@ -975,15 +978,6 @@ async fn win_minimize(
 }
 
 #[tauri::command]
-async fn win_maximize(window: tauri::WebviewWindow) -> Result<(), String> {
-    if window.is_maximized().unwrap_or(false) {
-        window.unmaximize().map_err(|e| e.to_string())
-    } else {
-        window.maximize().map_err(|e| e.to_string())
-    }
-}
-
-#[tauri::command]
 async fn win_close(
     app_handle: tauri::AppHandle,
     window: tauri::WebviewWindow,
@@ -999,20 +993,6 @@ async fn win_close(
         window.close().map_err(|e| e.to_string())?;
     }
     Ok(())
-}
-
-#[tauri::command]
-async fn win_move(window: tauri::WebviewWindow, dx: f64, dy: f64) -> Result<(), String> {
-    let pos = window.outer_position().map_err(|e| e.to_string())?;
-    let scale = window.scale_factor().map_err(|e| e.to_string())?;
-    // 桃华修复：outer_position() 返回的是物理像素
-    // 要先除以缩放因子转回逻辑坐标，再叠加 dx/dy（前端传的也是逻辑像素）
-    window
-        .set_position(tauri::LogicalPosition::new(
-            pos.x as f64 / scale + dx,
-            pos.y as f64 / scale + dy,
-        ))
-        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1041,27 +1021,6 @@ async fn set_opacity(window: tauri::WebviewWindow, opacity: f64) -> Result<(), S
     Ok(())
 }
 
-/// 读取图片文件，返回 base64 data URL（用于 CSS background-image）
-#[tauri::command]
-async fn read_image_data_url(path: String) -> Result<String, String> {
-    use base64::Engine;
-    let bytes = std::fs::read(&path).map_err(|e| format!("无法读取图片: {}", e))?;
-    let ext = Path::new(&path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("jpg");
-    let mime = match ext.to_lowercase().as_str() {
-        "png" => "image/png",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        "svg" => "image/svg+xml",
-        _ => "image/jpeg",
-    };
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    Ok(format!("data:{};base64,{}", mime, b64))
-}
-
 #[tauri::command]
 async fn open_external(url: String) -> Result<(), String> {
     open::that(&url).map_err(|e| format!("无法打开链接: {}", e))
@@ -1088,42 +1047,6 @@ pub fn run() {
         .manage(TaskState(Arc::new(AtomicBool::new(false))))
         .manage(ConfigState(Mutex::new(default_config)))
         .manage(HistoryState(Mutex::new(Vec::new())))
-        // ── 注册 bgimg:// 协议，加载本地背景图片 ──
-        .register_uri_scheme_protocol("bgimg", |ctx, request| {
-            let uri = request.uri();
-            let path = uri.path();
-            let filename = path.trim_start_matches('/');
-            let images_dir = ctx
-                .app_handle()
-                .path()
-                .app_data_dir()
-                .unwrap()
-                .join("MinagiData")
-                .join("images");
-            let file_path = images_dir.join(filename);
-
-            match std::fs::read(&file_path) {
-                Ok(bytes) => {
-                    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
-                    let mime = match ext.to_lowercase().as_str() {
-                        "png" => "image/png",
-                        "gif" => "image/gif",
-                        "webp" => "image/webp",
-                        "bmp" => "image/bmp",
-                        _ => "image/jpeg",
-                    };
-                    tauri::http::Response::builder()
-                        .status(200)
-                        .header("content-type", mime)
-                        .body(bytes)
-                        .unwrap()
-                }
-                Err(_) => tauri::http::Response::builder()
-                    .status(404)
-                    .body(Vec::new())
-                    .unwrap(),
-            }
-        })
         .invoke_handler(tauri::generate_handler![
             load_config,
             save_config,
@@ -1131,13 +1054,10 @@ pub fn run() {
             cancel_move,
             open_folder,
             import_image,
-            read_image_data_url,
             load_history,
             clear_history,
             win_minimize,
-            win_maximize,
             win_close,
-            win_move,
             set_opacity,
             open_external,
             list_snapshots,

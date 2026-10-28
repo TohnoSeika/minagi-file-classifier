@@ -45,16 +45,17 @@ Minagi_File_Classifier_Tauri_Builder_20260616-2.0/
 ### 脚本做了什么
 
 1. 从 `tauri.conf.json` 读取版本号
-2. 验证关键配置文件完整
+2. 验证关键配置文件完整（Cargo.toml / `src/index.html` 的版本、NSIS 占位符）
 3. 清理上次 NSIS 残留
 4. 执行 `cargo tauri build --target x86_64-pc-windows-msvc`
-5. 复制安装包到 `dist/`，命名为 `Minagi_文件分类助手_v{版本号}.exe`
+5. 校验安装包版本后复制到 `dist/`，命名为 `Minagi_File_Classifier_v{版本号}_Windows_Setup.exe`
 
 ### 版本号规则
 
 - 版本号**唯一来源**：`src-tauri/tauri.conf.json` 的 `version` 字段
 - `src-tauri/Cargo.toml` 的 `version` 必须保持一致
-- 脚本自动读取，无需手动传参
+- `src/index.html` 关于页的 `v{版本号}`（`set-about__ver`）也必须一致
+- 脚本自动读取并校验，无需手动传参；任何一处不一致都会直接中止打包
 
 ### NSIS 安装器模板
 
@@ -69,10 +70,12 @@ Minagi_File_Classifier_Tauri_Builder_20260616-2.0/
 - **安装器类型**：NSIS（配置在 tauri.conf.json 的 bundle.targets）
 - **Rust 优化**：release profile 开启 LTO + strip + opt-level=s
 - **前端**：纯 HTML/CSS/JS，无框架，无构建步骤
+- **安全**：CSP 已启用（`tauri.conf.json` 的 `app.security.csp`）；背景图通过 asset 协议加载，作用域限制在 AppData 的 `MinagiData/` 下
 
 ## 开发备注
 
 - 调试时用 `cargo tauri dev`（不是 build）
+- `src-tauri/gen/` 是构建时自动生成的 ACL 描述文件，已加入 `.gitignore`，不要提交
 - 图标文件路径：`src-tauri/icons/icon.ico`（`tauri.conf.json` 中配置，相对于 `src-tauri/` 目录）
 - 应用标识符：`minagi-file-classifier`（AppData 路径、registry 目录名等用这个）
 - **重要**：与旧版 Electron 1.6 的 `name` 一致，因此 AppData 共用 `%APPDATA%\minagi-file-classifier\MinagiData\`，无需迁移逻辑

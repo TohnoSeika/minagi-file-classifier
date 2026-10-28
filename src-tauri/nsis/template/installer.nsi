@@ -31,8 +31,9 @@ ${StrRep}
 
 !define MANUFACTURER "minagi-file-classifier"
 !define PRODUCTNAME "Minagi 文件分类助手"
-!define VERSION "2.0.0"
-!define VERSIONWITHBUILD "2.0.0.0"
+; 桃华修复：版本号必须由 Tauri 注入，写死会让安装包元数据永远停在旧版本
+!define VERSION "{{version}}"
+!define VERSIONWITHBUILD "{{version_with_build}}"
 !define HOMEPAGE ""
 !define INSTALLMODE "currentUser"
 !define LICENSE ""
@@ -59,7 +60,7 @@ ${StrRep}
 !define MANUKEY "Software\${MANUFACTURER}"
 !define MANUPRODUCTKEY "${MANUKEY}\${PRODUCTNAME}"
 !define UNINSTALLERSIGNCOMMAND ""
-!define ESTIMATEDSIZE "6833"
+!define ESTIMATEDSIZE "{{estimated_size}}"
 !define STARTMENUFOLDER ""
 
 Var PassiveMode

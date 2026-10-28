@@ -24,7 +24,7 @@
     transition: background 0.15s ease;
 }
 .history-row:hover {
-    background: rgba(232, 120, 144, 0.04);
+    background: rgba(var(--pink-rgb), 0.04);
 }
 
 .history-col {
@@ -43,6 +43,15 @@
     gap: 4px;
 }
 .history-col--dst  { flex: 0 0 52px; display: flex; justify-content: center; }
+.history-col--time {
+    flex: 0 0 64px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+.history-row .history-col--time {
+    font-size: 11px;
+    color: #b0a8a6;
+}
 
 /* 文件夹图标（替代路径文字） */
 .history-folder-icon {
@@ -59,7 +68,7 @@
 }
 .history-folder-icon:hover {
     color: var(--pink-hover);
-    background: rgba(232, 120, 144, 0.08);
+    background: rgba(var(--pink-rgb), 0.08);
 }
 .history-folder-icon svg {
     width: 20px;
@@ -89,7 +98,7 @@
     color: #8a8280;
 }
 .history-mode.cut {
-    color: #e87890;
+    color: var(--pink);
 }
 .history-mode.copy {
     color: #5b9e8a;

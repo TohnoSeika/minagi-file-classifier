@@ -53,8 +53,52 @@ foreach ($File in $RequiredFiles) {
     }
 }
 
+# 桃华定制：版本号必须和 Cargo.toml 一致（CLAUDE.md 的规则，脚本替 Minagi 检查）
+$CargoTomlPath = "$ScriptDir\src-tauri\Cargo.toml"
+$CargoVersion = $null
+if (Test-Path $CargoTomlPath) {
+    $CargoMatch = Select-String -Path $CargoTomlPath -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1
+    if ($CargoMatch) { $CargoVersion = $CargoMatch.Matches[0].Groups[1].Value }
+}
+if ($CargoVersion -ne $Version) {
+    Write-Host "  ✗ Cargo.toml 版本 ($CargoVersion) 与 tauri.conf.json ($Version) 不一致！" -ForegroundColor Red
+    $AllGood = $false
+} else {
+    Write-Host "  ✓ Cargo.toml 版本一致：$CargoVersion" -ForegroundColor Green
+}
+
+# 桃华定制：关于页显示的版本号也得跟着走，不然截图和程序里对不上
+$IndexHtmlPath = "$ScriptDir\src\index.html"
+if (Test-Path $IndexHtmlPath) {
+    $IndexText = Get-Content $IndexHtmlPath -Raw
+    $IndexVersionMatch = [regex]::Match($IndexText, 'class="set-about__ver">v([^<]+)<')
+    if (-not $IndexVersionMatch.Success) {
+        Write-Host "  ✗ index.html 里找不到版本号（set-about__ver）" -ForegroundColor Red
+        $AllGood = $false
+    } elseif ($IndexVersionMatch.Groups[1].Value -ne $Version) {
+        Write-Host "  ✗ index.html 版本 (v$($IndexVersionMatch.Groups[1].Value)) 与 tauri.conf.json ($Version) 不一致！" -ForegroundColor Red
+        $AllGood = $false
+    } else {
+        Write-Host "  ✓ index.html 版本一致：v$Version" -ForegroundColor Green
+    }
+}
+
+# 桃华定制：NSIS 模板的版本号必须是占位符
+# 写死的话，安装包属性里的版本会永远停在那个数字，跟程序版本对不上
+$NsisTemplatePath = "$ScriptDir\src-tauri\nsis\template\installer.nsi"
+if (Test-Path $NsisTemplatePath) {
+    $TemplateText = Get-Content $NsisTemplatePath -Raw
+    if ($TemplateText -notmatch '!define VERSION "\{\{version\}\}"' -or
+        $TemplateText -notmatch '!define VERSIONWITHBUILD "\{\{version_with_build\}\}"') {
+        Write-Host "  ✗ NSIS 模板的 VERSION / VERSIONWITHBUILD 不是占位符！" -ForegroundColor Red
+        $AllGood = $false
+    } else {
+        Write-Host "  ✓ NSIS 模板版本号使用占位符" -ForegroundColor Green
+    }
+}
+
 if (-not $AllGood) {
-    Write-Host "❌ 关键文件缺失，打包中止。" -ForegroundColor Red
+    Write-Host "❌ 打包前检查未通过，打包中止。" -ForegroundColor Red
     exit 1
 }
 Write-Host ""
@@ -124,6 +168,15 @@ if (-not (Test-Path $SourceInstaller)) {
     }
     exit 1
 }
+
+# 桃华定制：安装包生成后再核对一次版本，防止模板问题悄悄溜出去
+$InstallerVersion = (Get-Item $SourceInstaller).VersionInfo.ProductVersion
+$NormalizedVersion = (($InstallerVersion -split '\.') | Select-Object -First 3) -join '.'
+if ($NormalizedVersion -ne $Version) {
+    Write-Host "❌ 安装包版本 ($InstallerVersion) 与配置版本 ($Version) 不一致，打包中止。" -ForegroundColor Red
+    exit 1
+}
+Write-Host "  ✓ 安装包版本校验通过：$InstallerVersion" -ForegroundColor Green
 
 Copy-Item -Path $SourceInstaller -Destination $TargetPath -Force
 $FileSize = [math]::Round((Get-Item $TargetPath).Length / 1MB, 2)
